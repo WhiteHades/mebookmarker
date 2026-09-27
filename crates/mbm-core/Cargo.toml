@@ -20,6 +20,7 @@ thiserror.workspace = true
 url.workspace = true
 jiff.workspace = true
 ahash.workspace = true
+aho-corasick.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
 
