@@ -83,6 +83,9 @@ pub(crate) fn link(bookmark: &mut Bookmark, url: &str) {
 // hacker news
 
 /// a story or comment from the algolia api.
+///
+/// the fields this reader uses. the raw hit is kept alongside it, untouched, so
+/// a field nobody here knows about still reaches the archive.
 #[derive(Debug, Clone, Deserialize)]
 pub struct HnItem {
     /// the item id, or `None` for a deleted ancestor.
@@ -116,17 +119,22 @@ pub struct HnItem {
 /// the api returns a wrapper with a `hits` array, and every field is optional
 /// because a deleted item comes back as a null.
 pub fn parse_hackernews(body: &[u8], collection: Option<&str>) -> Result<Vec<Bookmark>> {
+    // read as raw json first and parse each hit out of that, so the stored raw
+    // payload is exactly what the api returned. a struct would drop every field
+    // it does not name, and the point of the archive format is that a later
+    // version can re-parse it
     #[derive(Deserialize)]
     struct Response {
         #[serde(default)]
-        hits: Vec<HnItem>,
+        hits: Vec<serde_json::Value>,
     }
 
     let response: Response =
         serde_json::from_slice(body).map_err(|e| Error::Ingest(format!("hacker news: {e}")))?;
 
     let mut out = Vec::with_capacity(response.hits.len());
-    for hit in response.hits {
+    for raw in response.hits {
+        let Ok(hit) = serde_json::from_value::<HnItem>(raw.clone()) else { continue };
         let Some(id) = hit.object_id.clone() else { continue };
 
         let mut text = String::new();
@@ -166,6 +174,7 @@ pub fn parse_hackernews(body: &[u8], collection: Option<&str>) -> Result<Vec<Boo
         if let Some(url) = hit.url.as_deref() {
             link(&mut bookmark, url);
         }
+        bookmark.raw = Some(raw);
         out.push(bookmark);
     }
     Ok(out)
@@ -402,11 +411,13 @@ pub struct StarredRepo {
 
 /// read a github stars page into bookmarks.
 pub fn parse_github_stars(body: &[u8]) -> Result<Vec<Bookmark>> {
-    let repos: Vec<StarredRepo> =
+    // raw json first, for the same reason the hacker news reader does
+    let raw_repos: Vec<serde_json::Value> =
         serde_json::from_slice(body).map_err(|e| Error::Ingest(format!("github: {e}")))?;
 
-    let mut out = Vec::with_capacity(repos.len());
-    for repo in repos {
+    let mut out = Vec::with_capacity(raw_repos.len());
+    for raw in raw_repos {
+        let Ok(repo) = serde_json::from_value::<StarredRepo>(raw.clone()) else { continue };
         let mut text = repo.full_name.clone();
         if let Some(description) = &repo.description {
             text.push_str("\n\n");
@@ -436,6 +447,7 @@ pub fn parse_github_stars(body: &[u8]) -> Result<Vec<Bookmark>> {
             link(&mut bookmark, homepage);
         }
         link(&mut bookmark, &repo_url);
+        bookmark.raw = Some(raw);
         let _ = repo.stargazers_count;
         out.push(bookmark);
     }
@@ -899,6 +911,26 @@ mod tests {
         let items = parse_reddit(body, None).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].source.external_id, "y");
+    }
+
+    #[test]
+    fn the_raw_hit_is_kept_for_the_archive_sink() {
+        let body =
+            br#"{"hits":[{"objectID":"1","title":"A fast thing","url":"https://example.com/a",
+          "author":"pg","created_at":"2026-01-02T10:00:00Z","points":42}]}"#;
+        let items = parse_hackernews(body, None).unwrap();
+        let raw = items[0].raw.as_ref().expect("the raw hit is kept");
+        assert_eq!(raw["title"], "A fast thing");
+        assert_eq!(raw["points"], 42, "a field the reader does not use is still kept");
+    }
+
+    #[test]
+    fn the_raw_repo_is_kept_for_the_archive_sink() {
+        let body =
+            br#"[{"full_name":"simonw/llm","description":"a library","stargazers_count":1000}]"#;
+        let items = parse_github_stars(body).unwrap();
+        let raw = items[0].raw.as_ref().expect("the raw repo is kept");
+        assert_eq!(raw["stargazers_count"], 1000);
     }
 
     #[test]
