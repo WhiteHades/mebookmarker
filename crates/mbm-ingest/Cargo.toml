@@ -12,17 +12,20 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-async-trait.workspace = true
-dirs.workspace = true
-jiff.workspace = true
 mbm-core.workspace = true
-mbm-extract.workspace = true
 mbm-store.workspace = true
-reqwest.workspace = true
+mbm-extract.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 simd-json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
-tracing.workspace = true
 url.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "fs", "sync"] }
+async-trait.workspace = true
+tracing.workspace = true
+dirs.workspace = true
+jiff.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "fs"] }
+tempfile.workspace = true

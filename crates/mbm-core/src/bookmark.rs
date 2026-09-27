@@ -127,6 +127,22 @@ pub enum MediaKind {
 }
 
 impl MediaKind {
+    /// parse a source's spelling, returning `None` for anything unrecognised.
+    ///
+    /// a source that says "image" means a photo and one that says
+    /// `animated_gif` means a gif. a caller that wants a guess either way uses
+    /// [`MediaKind::from_url`] instead.
+    #[must_use]
+    pub fn try_parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "photo" | "image" => Some(Self::Photo),
+            "video" => Some(Self::Video),
+            "gif" | "animated_gif" => Some(Self::Gif),
+            "audio" => Some(Self::Audio),
+            _ => None,
+        }
+    }
+
     #[must_use]
     pub fn from_url(url: &str) -> Self {
         let path = url.split(['?', '#']).next().unwrap_or(url);
