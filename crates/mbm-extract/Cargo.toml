@@ -1,0 +1,28 @@
+[package]
+name = "mbm-extract"
+description = "Link expansion and content extraction."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mbm-core.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls", "http2", "charset", "gzip"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "process"] }
+tracing.workspace = true
+memchr.workspace = true
+base64.workspace = true
+percent-encoding.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "process"] }

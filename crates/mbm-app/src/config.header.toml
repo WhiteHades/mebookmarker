@@ -1,0 +1,14 @@
+# mebookmarker configuration
+#
+# every key below is optional. a file with nothing in it is the same as no file
+# at all, and the program works that way on purpose: `mbm add <url>` needs no
+# configuration to run.
+#
+# secrets are named, not stored. each section below says which environment
+# variable holds the value, so this file stays safe to keep in a dotfiles
+# repository.
+#
+#   mbm config init     write this file with the defaults
+#   mbm config show     print the effective configuration
+#   mbm config path     print where it was looked for
+

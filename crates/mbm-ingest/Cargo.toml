@@ -1,0 +1,33 @@
+[package]
+name = "mbm-ingest"
+description = "Source adapters: everything mebookmarker can read from."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mbm-core.workspace = true
+mbm-store.workspace = true
+mbm-extract.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+simd-json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "fs", "sync"] }
+async-trait.workspace = true
+tracing.workspace = true
+dirs.workspace = true
+jiff.workspace = true
+blake3.workspace = true
+percent-encoding.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "fs"] }
+tempfile.workspace = true

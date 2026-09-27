@@ -1,0 +1,144 @@
+[workspace]
+resolver = "3"
+members = [
+  "crates/mbm-core",
+  "crates/mbm-store",
+  "crates/mbm-ingest",
+  "crates/mbm-extract",
+  "crates/mbm-jev",
+  "crates/mbm-agent",
+  "crates/mbm-enrich",
+  "crates/mbm-sink",
+  "crates/mbm-app",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/WhiteHades/mebookmarker"
+authors = ["mebookmarker contributors"]
+categories = ["command-line-utilities", "database"]
+keywords = ["bookmarks", "archive", "search", "fuzzy", "knowledge-base"]
+
+# ─── Shared dependency versions ───────────────────────────────────────────
+[workspace.dependencies]
+# internal
+mbm-core = { path = "crates/mbm-core", version = "1.0.0" }
+mbm-store = { path = "crates/mbm-store", version = "1.0.0" }
+mbm-ingest = { path = "crates/mbm-ingest", version = "1.0.0" }
+mbm-extract = { path = "crates/mbm-extract", version = "1.0.0" }
+mbm-jev = { path = "crates/mbm-jev", version = "1.0.0" }
+mbm-agent = { path = "crates/mbm-agent", version = "1.0.0" }
+mbm-enrich = { path = "crates/mbm-enrich", version = "1.0.0" }
+mbm-sink = { path = "crates/mbm-sink", version = "1.0.0" }
+
+# errors
+thiserror = "2.0.21"
+anyhow = "1.0.104"
+
+# async
+tokio = { version = "1.53.1", default-features = false }
+tokio-util = "0.7.19"
+futures = "0.3.34"
+async-trait = "0.1.92"
+
+# serialisation
+serde = { version = "1.0.229", features = ["derive", "rc"] }
+serde_json = "1.0.151"
+simd-json = "0.18.1"
+toml = "1.1.6"
+
+# http
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "http2", "charset", "gzip"] }
+base64 = "0.23.1"
+
+# storage
+rusqlite = { version = "0.40.2", features = ["bundled", "cache"] }
+
+# search & text
+neo_frizbee = "0.13.3"
+memchr = "2.8.3"
+aho-corasick = "1.1.5"
+blake3 = "1.8.7"
+ahash = "0.8.12"
+url = { version = "2.5.8", features = ["serde"] }
+percent-encoding = "2.3.2"
+regex = "1.13.1"
+strsim = "0.11.1"
+
+# concurrency
+rayon = "1.12.0"
+
+# text / dates
+jiff = { version = "0.2.37", features = ["serde"] }
+unicode-width = "0.2"
+
+# observability
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+
+# misc
+dirs = "7.0.0"
+fs4 = "1.1.0"
+clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }
+ratatui = "0.30.2"
+crossterm = "0.29.0"
+zip = "9.0.0-pre3"
+html5ever = "0.29.0"
+sha2 = "0.10.9"
+uuid = { version = "1.19.1", features = ["v4"] }
+
+# dev
+criterion = "0.5.1"
+tempfile = "3.24.0"
+insta = "1.44.0"
+
+# Feature flags live on the individual crates (`mbm-core` for `fast-hash`,
+# `mbm-store` for `bare-metal`); a virtual manifest cannot declare them.
+
+# ─── Optimisation profile ─────────────────────────────────────────────────
+# `bare-metal` is selected automatically on nightly with
+# `#![feature(portable_simd)]` gated code paths. These settings are what
+# actually produce the throughput numbers quoted in the README.
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+# Indexing is the dominant cost of a cold start. Building with optimisations
+# and no debug info roughly quarters the FTS5 index build time.
+[profile.profile-index]
+inherits = "release"
+debug = false
+
+[profile.bench]
+inherits = "release"
+debug = 1
+
+# ─── Shared lint configuration ────────────────────────────────────────────
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pedantic lints that fight idiomatic Rust rather than improving it.
+module_inception = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+cast_possible_truncation = "allow"
+cast_precision_loss = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+similar_names = "allow"
+too_many_lines = "allow"
+struct_excessive_bools = "allow"
+must_use_candidate = "allow"

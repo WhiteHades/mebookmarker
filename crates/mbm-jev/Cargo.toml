@@ -1,0 +1,24 @@
+[package]
+name = "mbm-jev"
+description = "Typed evaluation client for JEV on Vercel AI Gateway."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mbm-core.workspace = true
+reqwest = { workspace = true, features = ["json", "rustls", "http2", "charset"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }

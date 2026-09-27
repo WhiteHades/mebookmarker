@@ -1,0 +1,27 @@
+# mebookmarker build configuration.
+#
+# No `target-cpu` or `target-feature` flags are set here on purpose. Those
+# would make the committed binary non-portable, and they are not needed:
+# every SIMD path in the dependency tree (memchr, aho-corasick, ahash,
+# blake3, neo-frizbee) performs its own runtime CPU detection.
+#
+# For a maximum-throughput local build, override at the command line:
+#   RUSTFLAGS="-C target-cpu=native" cargo build --release
+#
+# `nightly` additionally enables the hand-written `portable_simd` paths:
+#   cargo +nightly build --release --features bare-metal
+
+[alias]
+b = "build --release"
+r = "run --release"
+t = "test"
+f = "fmt --all"
+c = "clippy --all-targets --all-features"
+d = "doc --no-deps --open"
+
+[term]
+verbose = false
+
+[net]
+# The bundled SQLite amalgamation is large; keep it across builds.
+git-fetch-with-cli = true
