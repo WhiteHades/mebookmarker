@@ -36,6 +36,9 @@ jobs:
       - name: tests
         run: cargo test --workspace
 
+      - name: docs build without a broken link
+        run: cargo doc --workspace --no-deps
+
   build:
     name: the release binary
     runs-on: ubuntu-latest
