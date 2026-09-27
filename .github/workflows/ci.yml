@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # a build cache keyed on the lockfile, because the dependency tree is large
+  # and the workspace is nine crates
+  RUSTFLAGS: -D warnings
+
+jobs:
+  check:
+    name: fmt, clippy, and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install the toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: formatting
+        run: cargo fmt --all --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: tests
+        run: cargo test --workspace
+
+  build:
+    name: the release binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install the toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build
+        run: cargo build --release --workspace
+
+      - name: check the binary runs
+        run: |
+          ./target/release/mbm --version
+          ./target/release/mbm --help > /dev/null
+
+      - name: the benches compile
+        run: cargo bench --workspace --no-run
+
+  miri:
+    name: the unsafe-free crates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install the toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: miri
+
+      - uses: Swatinem/rust-cache@v2
+
+      # the domain and the sinks hold no unsafe and no locks across a thread, so
+      # this is a cheap check that the arithmetic in the date conversions and the
+      # civil-date maths is sound
+      - name: miri
+        run: cargo miri test -p mbm-core -p mbm-sink
