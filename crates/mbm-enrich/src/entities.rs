@@ -319,6 +319,21 @@ pub fn cashtags(text: &str) -> Vec<String> {
     collect_marked(text, '$')
 }
 
+/// whether a tag is an html entity rather than a tag.
+///
+/// escaped html is everywhere in a feed, and `&#x27;` is a quote mark whose body
+/// reads as a hashtag named `x27`. the token scan stops at the `;`, so the
+/// caller passes the character that ended it and the check needs that one too.
+fn is_html_entity(tag: &str, terminator: char) -> bool {
+    if terminator != ';' {
+        return false;
+    }
+    match tag.strip_prefix('x').or_else(|| tag.strip_prefix('X')) {
+        Some(hex) => !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit()),
+        None => !tag.is_empty() && tag.chars().all(|c| c.is_ascii_digit()),
+    }
+}
+
 fn collect_marked(text: &str, mark: char) -> Vec<String> {
     let mut out = Vec::new();
     let bytes = text.as_bytes();
@@ -339,7 +354,12 @@ fn collect_marked(text: &str, mark: char) -> Vec<String> {
         }
         // a tag has to carry a letter: `$100` is a price, `#2026` is a year
         let tag = text[start..end].to_ascii_lowercase();
-        if !inside_word && tag.chars().any(char::is_alphabetic) && !out.contains(&tag) {
+        let terminator = text[end..].chars().next().unwrap_or('\0');
+        if !inside_word
+            && tag.chars().any(char::is_alphabetic)
+            && !is_html_entity(&tag, terminator)
+            && !out.contains(&tag)
+        {
             out.push(tag);
         }
         at = end.max(start);
