@@ -146,16 +146,27 @@ impl<'conn> Repo<'conn> {
     }
 
     /// insert many bookmarks, committing in batches.
+    ///
+    /// an item already in the store is skipped, and so is a second item in the
+    /// same batch with the same identity. that second case is a real one: a
+    /// personal archive quotes the same post it bookmarks elsewhere, and a batch
+    /// that aborted on the collision would lose every item after it.
     pub fn insert_many<'a>(&self, bookmarks: impl IntoIterator<Item = &'a Bookmark>) -> Result<usize> {
         let mut written = 0;
         let mut pending: Vec<&Bookmark> = Vec::with_capacity(IMPORT_BATCH);
+        let mut queued: AHashSet<(SourceMedium, String)> = AHashSet::with_capacity(IMPORT_BATCH);
+
         for bookmark in bookmarks {
-            if self.find_id(bookmark.source.medium, &bookmark.source.external_id)?.is_some() {
+            let key = (bookmark.source.medium, bookmark.source.external_id.clone());
+            if !queued.insert(key)
+                || self.find_id(bookmark.source.medium, &bookmark.source.external_id)?.is_some()
+            {
                 continue;
             }
             pending.push(bookmark);
             if pending.len() >= IMPORT_BATCH {
                 written += self.commit_batch(&mut pending)?;
+                queued.clear();
             }
         }
         if !pending.is_empty() {
