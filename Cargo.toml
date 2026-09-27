@@ -63,7 +63,7 @@ memchr = "2.8.3"
 aho-corasick = "1.1.5"
 blake3 = "1.8.7"
 ahash = "0.8.12"
-url = "2.5.8"
+url = { version = "2.5.8", features = ["serde"] }
 percent-encoding = "2.3.2"
 regex = "1.13.1"
 strsim = "0.11.1"
@@ -95,16 +95,8 @@ criterion = "0.5.1"
 tempfile = "3.24.0"
 insta = "1.44.0"
 
-# ─── Feature unification ──────────────────────────────────────────────────
-# `fast-hash` selects the AES-NI hasher. ahash performs its own runtime CPU
-# detection, so this needs no RUSTFLAGS and stays portable.
-#
-# `bare-metal` compiles the hand-written portable_simd kernels. It requires
-# nightly and is never enabled by default: forcing nightly on installers is
-# a worse trade than the few percent those kernels buy.
-[features]
-default = ["fast-hash"]
-fast-hash = []
+# Feature flags live on the individual crates (`mbm-core` for `fast-hash`,
+# `mbm-store` for `bare-metal`); a virtual manifest cannot declare them.
 
 # ─── Optimisation profile ─────────────────────────────────────────────────
 # `bare-metal` is selected automatically on nightly with
