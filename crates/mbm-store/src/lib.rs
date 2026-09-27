@@ -3,9 +3,14 @@
 pub mod db;
 pub mod fingerprint;
 pub mod prefilter;
+pub mod repo;
 pub mod schema;
+pub mod search;
 
 use mbm_core::Result;
+
+pub use repo::{Filter, Repo};
+pub use search::{Hit, Mode, Searcher};
 use rusqlite::Connection;
 
 /// bring the database up to [`schema::SCHEMA_VERSION`].
