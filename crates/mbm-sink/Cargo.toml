@@ -1,6 +1,6 @@
 [package]
 name = "mbm-sink"
-description = "Output adapters: everything mebookmarker can write to."
+description = "Output formats: from markdown to jsonl to a browsable html archive."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -12,14 +12,18 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
-async-trait.workspace = true
-dirs.workspace = true
-jiff.workspace = true
 mbm-core.workspace = true
 mbm-store.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "fs", "sync"] }
 tracing.workspace = true
 url.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+csv.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "fs"] }
+tempfile.workspace = true
