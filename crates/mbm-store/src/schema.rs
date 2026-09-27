@@ -115,11 +115,16 @@ CREATE INDEX bookmark_category_cat ON bookmark_category(category);
 -- External content: only the inverted index is stored, never a second copy of
 -- the text. `extra` carries the author, tags, and recognised tool names, so a
 -- query for a tool name finds a bookmark whose prose never mentions it.
+-- no `prefix` option, on purpose. a prefix index records where every short
+-- token prefix occurs, which looked like the answer for an as-you-type search
+-- box, and measuring it said otherwise: 30% more space, a rare two-letter stem
+-- going from 0.06ms to 41ms, and about 10% on the queries it was meant to
+-- help. the prefilter in `search.rs` serves that case instead.
 CREATE VIRTUAL TABLE search USING fts5(
     title, body, extra,
     content='bookmark',
     content_rowid='id',
-    tokenize='porter unicode61 remove_daticritics 2'
+    tokenize='porter unicode61 remove_diacritics 2'
 );
 
 CREATE TRIGGER search_ai AFTER INSERT ON bookmark BEGIN
@@ -137,12 +142,11 @@ END;
 
 -- Rebuilding from a partially-updated index is cheap and exact:
 --   INSERT INTO search(search) VALUES('rebuild');
-CREATE VIRTUAL TABLE search_trigram USING fts5(
-    title, body, extra,
-    content='bookmark',
-    content_rowid='id',
-    tokenize='trigram'
-);
+--
+-- Merging the segment b-trees into one is the other half of that:
+--   INSERT INTO search(search) VALUES('optimize');
+-- a fresh table is a pile of small segments, and `optimize` collapses them
+-- into the smallest and fastest-to-query form. `mbm reindex` runs it.
 
 -- ─── Run log ─────────────────────────────────────────────────────────────
 -- One row per pipeline run, so `mbm status` can report what happened and
