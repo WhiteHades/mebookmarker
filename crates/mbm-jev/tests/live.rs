@@ -1,12 +1,9 @@
 //! live checks against the real gateway.
 //!
-//! these run only when `MEBOOKMARKER_JEV_LIVE=1` and a key is present, so the
-//! default `cargo test` stays offline and hermetic. the fixtures in the unit
-//! tests pin the wire format; these confirm the wire format is still current.
-//!
-//! run with:
-//!   MEBOOKMARKER_JEV_LIVE=1 AI_GATEWAY_API_KEY=$(cat ~/.secrets/vercel/vercel-ai-gateway) \
-//!     cargo test -p mbm-jev --test live -- --nocapture
+//! they run only when `MEBOOKMARKER_JEV_LIVE=1` and a key is present, so the
+//! default `cargo test` stays offline. the unit tests pin the wire format with
+//! fixtures; these confirm the wire format is still what the gateway sends.
+#![allow(clippy::doc_markdown)]
 
 use std::collections::BTreeMap;
 

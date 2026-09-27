@@ -249,6 +249,27 @@ impl LinkKind {
     }
 }
 
+impl LinkKind {
+    /// a noun phrase for this kind, used in indexed text and prompts.
+    #[must_use]
+    pub const fn title(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Repository => "repository",
+            Self::Article => "article",
+            Self::LongForm => "long-form article",
+            Self::Video => "video",
+            Self::Podcast => "podcast",
+            Self::Post => "post",
+            Self::Image => "image",
+            Self::Thread => "thread",
+            Self::Paper => "paper",
+            Self::Product => "product",
+            Self::Release => "release",
+            Self::Unknown => return None,
+        })
+    }
+}
+
 impl fmt::Display for LinkKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
