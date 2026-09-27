@@ -74,6 +74,7 @@ async fn dispatch(cli: &Cli) -> Result<Output> {
         return cli::config_command(args);
     }
 
+
     let conn = mbm_app::pipeline::open(&config)?;
 
     match &cli.command {
