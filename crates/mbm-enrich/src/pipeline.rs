@@ -11,15 +11,17 @@
 //! every bookmark back in that stage's queue, which is how a new taxonomy or a
 //! new model gets applied to an archive that already exists.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mbm_core::bookmark::Bookmark;
+use mbm_core::bookmark::{Bookmark, CategoryAssignment};
 use mbm_core::error::{Error, Result};
 use mbm_core::id::Id;
 use mbm_core::port::{EnrichStage, Enricher};
 use mbm_store::{Filter, Repo};
 use rusqlite::Connection;
+use rusqlite::params;
 
 use crate::entities::Entities;
 use crate::tags::{Categorizer, Tagger};
@@ -226,7 +228,7 @@ pub async fn run(conn: &Connection, plan: &Plan) -> Result<Report> {
                 };
                 match enricher.enrich(&mut bookmark).await {
                     Ok(()) => {
-                        if write_back(&tx, &repo, *id, &bookmark, stage).is_ok() {
+                        if write_back(&tx, *id, &bookmark, stage).is_ok() {
                             done.push(*id);
                         } else {
                             stage_report.failed += 1;
@@ -307,48 +309,99 @@ pub fn indexed_text(bookmark: &Bookmark) -> String {
 }
 
 /// write one enriched bookmark back, in the shape its stage owns.
+///
+/// every stage that produces something writes it here. a stage whose output is
+/// dropped is a stage that ran, cost money, and changed nothing, which is the
+/// one failure this design cannot have.
 fn write_back(
     tx: &rusqlite::Transaction<'_>,
-    _repo: &Repo<'_>,
     id: Id,
     bookmark: &Bookmark,
     stage: EnrichStage,
 ) -> Result<()> {
-    match stage {
-        EnrichStage::Entities => {
-            let tags: ahash::AHashSet<String> = bookmark.tags.iter().cloned().collect();
-            // a fingerprint is the whole point of this stage, so its absence is
-            // worth a warning rather than a silent success
-            if let Some(fingerprint) = bookmark.fingerprint {
-                Repo::new(tx).set_fingerprint(id, fingerprint)?;
-            } else {
-                tracing::warn!(%id, "the entity stage produced no fingerprint");
-            }
-            // the tags are written through the page transaction rather than
-            // through `Repo::set_tags`, which opens its own and sqlite refuses
-            // a nested `begin`
-            tx.execute("DELETE FROM tag WHERE bookmark = ?1", rusqlite::params![id.get() as i64])
-                .map_err(|e| store(&e))?;
-            for tag in &tags {
-                tx.execute(
-                    "INSERT OR IGNORE INTO tag(bookmark, tag) VALUES (?1, ?2)",
-                    rusqlite::params![id.get() as i64, tag],
-                )
-                .map_err(|e| store(&e))?;
-            }
-            let repo = Repo::new(tx);
-            // the index reads `extra` for the things the body does not spell
-            // out: who wrote it, what it is tagged, where it came from
-            repo.set_indexed_text(id, bookmark.title.as_deref(), &indexed_text(bookmark))?;
+    let repo = Repo::new(tx);
+
+    // the tags belong to whichever stage last touched them, and both the entity
+    // and the tag stage add to the same set
+    if matches!(stage, EnrichStage::Entities | EnrichStage::Tags) {
+        write_tags(tx, id, &bookmark.tags)?;
+        // the index reads `extra` for what the body does not spell out: who
+        // wrote it, what it is tagged, where it came from
+        repo.set_indexed_text(id, bookmark.title.as_deref(), &indexed_text(bookmark))?;
+    }
+
+    if stage == EnrichStage::Entities {
+        // a fingerprint is the whole point of this stage, so its absence is
+        // worth a warning rather than a silent success
+        if let Some(fingerprint) = bookmark.fingerprint {
+            repo.set_fingerprint(id, fingerprint)?;
+        } else {
+            tracing::warn!(%id, "the entity stage produced no fingerprint");
         }
-        EnrichStage::Describe => {
-            Repo::new(tx).set_described(
-                id,
-                bookmark.title.as_deref(),
-                summary_of(bookmark).as_deref(),
-            )?;
-        }
-        _ => {}
+    }
+
+    if stage == EnrichStage::Categorize && !bookmark.categories.is_empty() {
+        write_categories(tx, id, &bookmark.categories)?;
+    }
+
+    if stage == EnrichStage::Describe {
+        repo.set_described(id, bookmark.title.as_deref(), summary_of(bookmark).as_deref())?;
+    }
+
+    Ok(())
+}
+
+/// replace a bookmark's tags.
+///
+/// written through the page transaction rather than through `Repo::set_tags`,
+/// which opens its own and sqlite refuses a nested `begin`.
+fn write_tags(tx: &rusqlite::Transaction<'_>, id: Id, tags: &BTreeSet<String>) -> Result<()> {
+    tx.execute("DELETE FROM tag WHERE bookmark = ?1", params![id.get() as i64])
+        .map_err(|e| store(&e))?;
+    for tag in tags {
+        tx.execute(
+            "INSERT OR IGNORE INTO tag(bookmark, tag) VALUES (?1, ?2)",
+            params![id.get() as i64, tag],
+        )
+        .map_err(|e| store(&e))?;
+    }
+    Ok(())
+}
+
+/// replace a bookmark's category assignments.
+///
+/// the catalogue rows are upserted first, so a taxonomy that gained a category
+/// works against an archive that predates it, and the assignment points at a row
+/// that exists.
+fn write_categories(
+    tx: &rusqlite::Transaction<'_>,
+    id: Id,
+    assignments: &[CategoryAssignment],
+) -> Result<()> {
+    for assignment in assignments {
+        tx.execute(
+            "INSERT INTO category(slug, name, color, description, action)
+             VALUES (?1, ?1, '', '', 'capture')
+             ON CONFLICT(slug) DO NOTHING",
+            params![assignment.slug],
+        )
+        .map_err(|e| store(&e))?;
+        let category: i64 = tx
+            .query_row("SELECT id FROM category WHERE slug = ?1", params![assignment.slug], |r| {
+                r.get(0)
+            })
+            .map_err(|e| store(&e))?;
+        tx.execute(
+            "INSERT OR REPLACE INTO bookmark_category(bookmark, category, confidence, assigned_by)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                id.get() as i64,
+                category,
+                assignment.confidence,
+                assignment.assigned_by.name()
+            ],
+        )
+        .map_err(|e| store(&e))?;
     }
     Ok(())
 }
@@ -542,6 +595,90 @@ mod tests {
         let second = run(&conn, &plan).await.unwrap();
         assert_eq!(second.total_done(), 0);
         assert_eq!(stage.count(), 3, "a stamped row is not read again");
+    }
+
+    /// a stage that adds one tag to whatever it is given.
+    #[derive(Debug)]
+    struct Tagger {
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Enricher for Tagger {
+        fn stage(&self) -> EnrichStage {
+            EnrichStage::Tags
+        }
+
+        async fn enrich(&self, bookmark: &mut Bookmark) -> Result<()> {
+            self.seen.lock().map(|mut s| s.push(bookmark.source.external_id.clone())).ok();
+            bookmark.push_tag("added-by-the-stage");
+            Ok(())
+        }
+    }
+
+    /// a stage that files one bookmark under a category.
+    #[derive(Debug)]
+    struct Filer;
+
+    #[async_trait::async_trait]
+    impl Enricher for Filer {
+        fn stage(&self) -> EnrichStage {
+            EnrichStage::Categorize
+        }
+
+        async fn enrich(&self, bookmark: &mut Bookmark) -> Result<()> {
+            bookmark.categories.push(CategoryAssignment {
+                slug: "engineering".to_owned(),
+                confidence: 0.9,
+                assigned_by: mbm_core::bookmark::Assigner::Jev,
+            });
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn the_tag_stage_saves_its_tags() {
+        // a stage that runs, costs money, and writes nothing is the one failure
+        // this design cannot have
+        let (_dir, conn) = open();
+        seed(&conn, 3);
+        let plan = Plan::new(vec![Arc::new(Tagger { seen: std::sync::Mutex::new(Vec::new()) })]);
+        run(&conn, &plan).await.unwrap();
+
+        let repo = Repo::new(&conn);
+        let found = repo.by_tag("added-by-the-stage", 10, 0).unwrap();
+        assert_eq!(found.len(), 3, "every row kept the tag the stage added");
+    }
+
+    #[tokio::test]
+    async fn the_tag_stage_keeps_the_tags_an_earlier_stage_added() {
+        let (_dir, conn) = open();
+        seed(&conn, 2);
+        for bookmark in Repo::new(&conn).list(10, 0).unwrap() {
+            let mut b = bookmark;
+            b.push_tag("from-entities");
+            Repo::new(&conn).set_tags(b.id, &b.tags.iter().cloned().collect()).unwrap();
+        }
+
+        let plan = Plan::new(vec![Arc::new(Tagger { seen: std::sync::Mutex::new(Vec::new()) })]);
+        run(&conn, &plan).await.unwrap();
+
+        let repo = Repo::new(&conn);
+        assert_eq!(repo.by_tag("from-entities", 10, 0).unwrap().len(), 2);
+        assert_eq!(repo.by_tag("added-by-the-stage", 10, 0).unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn the_categorize_stage_saves_its_categories() {
+        let (_dir, conn) = open();
+        seed(&conn, 2);
+        let plan = Plan::new(vec![Arc::new(Filer)]);
+        run(&conn, &plan).await.unwrap();
+
+        let stored = Repo::new(&conn).load(Id::from_parts(1_700_000_000_000, 0)).unwrap().unwrap();
+        assert_eq!(stored.categories.len(), 1, "{:?}", stored.categories);
+        assert_eq!(stored.categories[0].slug, "engineering");
+        assert!((stored.categories[0].confidence - 0.9).abs() < f32::EPSILON);
     }
 
     #[tokio::test]
