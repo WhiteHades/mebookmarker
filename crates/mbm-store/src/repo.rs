@@ -299,6 +299,19 @@ impl<'conn> Repo<'conn> {
             });
         }
 
+        // the tags are the one satellite the caller always wants, because a
+        // list row shows them and a filter reads them
+        let mut stmt = self
+            .conn
+            .prepare("SELECT tag FROM tag WHERE bookmark = ?1 ORDER BY tag")
+            .sql()?;
+        let rows = stmt
+            .query_map(params![id], |r| r.get::<_, String>(0))
+            .sql()?;
+        for row in rows {
+            bookmark.tags.insert(row.map_err(|e| store_err(&e))?);
+        }
+
         Ok(())
     }
 
