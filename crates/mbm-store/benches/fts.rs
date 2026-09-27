@@ -49,7 +49,8 @@ fn corpus() -> Vec<(String, String, String)> {
         .map(|i| {
             let mut body = String::with_capacity(160);
             for _ in 0..14 {
-                body.push_str(&format!("w{} ", rng.word()));
+                use std::fmt::Write as _;
+                let _ = write!(body, "w{} ", rng.word());
             }
             let title = format!("w{} w{}", rng.word(), rng.word());
             let extra = format!("w{} {}", rng.word(), i % 97);
@@ -70,7 +71,7 @@ fn open(prefix: Option<&str>) -> Connection {
     )
     .unwrap();
     if let Some(p) = prefix {
-        db.execute_batch(&format!("DROP TABLE search;")).ok();
+        db.execute_batch("DROP TABLE search;").ok();
         db.execute_batch(&format!(
             "CREATE VIRTUAL TABLE search USING fts5(
                 title, body, extra, content='bookmark', content_rowid='id',

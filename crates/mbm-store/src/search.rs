@@ -508,7 +508,7 @@ mod tests {
             conn.execute(
                 "INSERT INTO bookmark(id, medium, external_id, ingested_at, body)
                  VALUES (?1, 'manual', ?2, 0, 'common token everywhere')",
-                rusqlite::params![i as i64 + 1, format!("e{i}")],
+                rusqlite::params![i64::from(i) + 1, format!("e{i}")],
             )
             .unwrap();
         }

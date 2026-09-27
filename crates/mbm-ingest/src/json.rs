@@ -293,7 +293,7 @@ fn normalise_epoch(raw: i64) -> Option<i64> {
 ///
 /// tried in order: rfc 3339, the `2024-01-02 15:04:05` that python and
 /// javascript both emit, a bare date, and a unix epoch as a string.
-fn parse_date(raw: &str) -> Option<i64> {
+pub fn parse_date(raw: &str) -> Option<i64> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;

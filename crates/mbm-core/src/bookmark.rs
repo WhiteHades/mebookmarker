@@ -26,10 +26,16 @@ impl Author {
         }
     }
 
+    /// add a display name.
     #[must_use]
-    pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        let name = name.into();
-        if !name.trim().is_empty() {
+    pub fn with_name(self, name: impl Into<String>) -> Self {
+        self.with_name_opt(Some(name.into()))
+    }
+
+    /// add a display name, when there is one.
+    #[must_use]
+    pub fn with_name_opt(mut self, name: Option<String>) -> Self {
+        if let Some(name) = name.filter(|n| !n.trim().is_empty()) {
             self.name = Some(name);
         }
         self

@@ -277,6 +277,12 @@ pub fn links_in(text: &str) -> Vec<Url> {
     out
 }
 
+/// percent-encode a value for use in a query string.
+#[must_use]
+pub fn percent_encode_query(raw: &str) -> String {
+    percent_encoding::utf8_percent_encode(raw, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
 /// strip the punctuation that follows a link when someone types it inline.
 fn trim_trailing_punctuation(candidate: &str) -> &str {
     candidate.trim_end_matches(['.', ',', ';', ':', '!', '?', '\'', '"', ')', ']', '}', '>'])
