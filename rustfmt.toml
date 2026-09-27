@@ -1,0 +1,4 @@
+# the width is 100 because that is what the code was written at, and a
+# reformat of every file to 80 would be a diff that says nothing.
+max_width = 100
+use_small_heuristics = "Max"
