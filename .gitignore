@@ -1,25 +1,54 @@
-# Dependencies
-node_modules/
+# ─── Rust build artifacts ────────────────────────────────────────────────
+/target
+**/*.rs.bk
+*.pdb
+/cargo-lock-audit.json
 
-# State files (contain your bookmark data)
-.state/
+# ─── Local configuration and secrets ─────────────────────────────────────
+# mebookmarker.toml holds OAuth cookies and API keys. mebookmarker.toml.example
+# is the tracked template.
+/mebookmarker.toml
+*.local.toml
+.env
+.env.*
+!.env.example
 
-# Config with credentials (use smaug.config.example.json as template)
-bookmarks-archiver.config.json
-smaug.config.json
+# ─── Runtime state (contains your actual bookmark data) ───────────────────
+/.state/
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+/index/*.idx
+/cache/
 
-# Output (optional - you may want to track this)
-# bookmarks.md
+# ─── Agent and skill files — local only, never published ──────────────────
+# These drive coding agents in this repo. They are personal workflow config,
+# not part of the project, so they stay out of the public repository.
+/AGENTS.md
+/CLAUDE.md
+/.claude/
+/.agents/
+/.mattpocock/
+/.scratch/
+/docs/agents/
+/skills/
+/thoughts/
+/tmp/
+/.tmp/
 
-# OS files
+# ─── Generated output ─────────────────────────────────────────────────────
+# Rendered artifacts are reproducible from the database; do not commit them.
+/out/
+/dist/
+/site/
+
+# ─── OS and editor ────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
-
-# Editor files
+desktop.ini
 *.swp
 *.swo
+*~
 .idea/
 .vscode/
-
-# Logs
-*.log
