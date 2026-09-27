@@ -791,6 +791,7 @@ fn map_row(row: &Row<'_>) -> rusqlite::Result<Bookmark> {
             profile: None,
         }),
         title: row.get(7)?,
+        summary: row.get(8)?,
         text: row.get(9)?,
         url: row.get::<_, Option<String>>(4)?.and_then(|u| parse_url_opt(&u)),
         created_at: row.get(12)?,
