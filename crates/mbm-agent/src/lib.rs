@@ -150,7 +150,16 @@ impl Driver {
     pub fn command_line(&self, prompt: &str) -> Vec<String> {
         let mut args: Vec<String> = match self.agent {
             Agent::Opencode => vec!["run".to_owned(), "--format".to_owned(), "json".to_owned()],
-            Agent::Codex => vec!["exec".to_owned()],
+            // codex refuses to run outside a directory it trusts, and this
+            // program runs wherever the user's shell happens to be. it is a
+            // read-only call over a prompt this program wrote, so there is
+            // nothing for the check to protect.
+            Agent::Codex => vec![
+                "exec".to_owned(),
+                "--skip-git-repo-check".to_owned(),
+                "--sandbox".to_owned(),
+                "read-only".to_owned(),
+            ],
             Agent::Claude => {
                 vec![
                     "-p".to_owned(),
@@ -512,6 +521,17 @@ mod tests {
         assert!(args.contains(&"--format".to_owned()));
         assert!(args.contains(&"json".to_owned()));
         assert_eq!(args.last().unwrap(), "do the thing");
+    }
+
+    #[test]
+    fn codex_is_told_it_may_run_anywhere_and_write_nothing() {
+        // without the repo check codex refuses to run from a directory it does
+        // not trust, and without the sandbox it would run with write access for
+        // what is a read-only question
+        let args = Driver::new(Agent::Codex).command_line("p");
+        assert!(args.contains(&"--skip-git-repo-check".to_owned()), "{args:?}");
+        let at = args.iter().position(|a| a == "--sandbox").unwrap();
+        assert_eq!(args[at + 1], "read-only");
     }
 
     #[test]
