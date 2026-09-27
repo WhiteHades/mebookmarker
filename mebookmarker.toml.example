@@ -1,0 +1,280 @@
+# mebookmarker configuration
+#
+# every key below is optional. a file with nothing in it is the same as no file
+# at all, and the program works that way on purpose: `mbm add <url>` needs no
+# configuration to run.
+#
+# secrets are named, not stored. each section below says which environment
+# variable holds the value, so this file stays safe to keep in a dotfiles
+# repository.
+#
+#   mbm config init     write this file with the defaults
+#   mbm config show     print the effective configuration
+#   mbm config path     print where it was looked for
+
+data_dir = "."
+page_size = 100
+request_timeout_secs = 30
+retries = 3
+user_agent = "mebookmarker/1.0.0"
+sources = []
+sinks = []
+tag_vocabulary = [
+    "rust",
+    "python",
+    "javascript",
+    "systems",
+    "databases",
+    "algorithms",
+    "security",
+    "machine-learning",
+    "devops",
+    "design",
+    "ux",
+    "productivity",
+    "business",
+    "science",
+    "health",
+    "climate",
+    "history",
+    "philosophy",
+    "art",
+    "music",
+    "writing",
+    "learning",
+    "news",
+    "tools",
+]
+jev_env_var = "AI_GATEWAY_API_KEY"
+
+[taxonomy]
+fallback = "general"
+
+[taxonomy.categories.business]
+slug = "business"
+name = "Business"
+color = "#ca8a04"
+description = "markets, companies, and money"
+action = "capture"
+
+[taxonomy.categories.design]
+slug = "design"
+name = "Design"
+color = "#db2777"
+description = "interfaces, type, and craft"
+action = "capture"
+
+[taxonomy.categories.engineering]
+slug = "engineering"
+name = "Engineering"
+color = "#4f46e5"
+description = "code, tools, and systems"
+action = "capture"
+
+[taxonomy.categories.general]
+slug = "general"
+name = "General"
+color = "#6b7280"
+description = "everything else"
+action = "capture"
+
+[taxonomy.categories.media]
+slug = "media"
+name = "Media"
+color = "#ea580c"
+description = "video, audio, and pictures"
+action = "capture"
+
+[taxonomy.categories.news]
+slug = "news"
+name = "News"
+color = "#dc2626"
+description = "what happened"
+action = "capture"
+
+[taxonomy.categories.reading]
+slug = "reading"
+name = "Reading"
+color = "#0891b2"
+description = "things to read later"
+action = "capture"
+
+[taxonomy.categories.science]
+slug = "science"
+name = "Science"
+color = "#16a34a"
+description = "research and findings"
+action = "capture"
+
+[taxonomy.categories.writing]
+slug = "writing"
+name = "Writing"
+color = "#7c3aed"
+description = "things being written"
+action = "capture"
+
+[[taxonomy.rules]]
+slug = "engineering"
+match_any = [
+    "github.com",
+    "gitlab.com",
+    "arxiv.org",
+    "docs.rs",
+    "crates.io",
+    "developer.mozilla.org",
+    "stackoverflow.com",
+]
+match_all = []
+
+[[taxonomy.rules]]
+slug = "design"
+match_any = [
+    "figma.com",
+    "dribbble.com",
+    "awwwards.com",
+    "fonts.google.com",
+    "typewolf.com",
+]
+match_all = []
+
+[[taxonomy.rules]]
+slug = "business"
+match_any = [
+    "substack.com",
+    "stripe.com",
+    "a16z.com",
+    "bloomberg.com",
+]
+match_all = []
+
+[[taxonomy.rules]]
+slug = "science"
+match_any = [
+    "nature.com",
+    "science.org",
+    "arxiv.org",
+    "quantamagazine.org",
+    "nasa.gov",
+]
+match_all = []
+
+[[taxonomy.rules]]
+slug = "news"
+match_any = [
+    "reuters.com",
+    "apnews.com",
+    "bbc.com",
+    "theverge.com",
+    "arstechnica.com",
+]
+match_all = []
+
+[[taxonomy.rules]]
+slug = "media"
+match_any = [
+    "youtube.com",
+    "youtu.be",
+    "vimeo.com",
+    "spotify.com",
+    "twitch.tv",
+]
+match_all = []
+
+[[taxonomy.rules]]
+slug = "reading"
+match_any = [
+    "readwise.io",
+    "pocket.com",
+    "instapaper.com",
+]
+match_all = []
+
+[enrich]
+entities = true
+vision = true
+tags = true
+categorize = true
+describe = false
+page = 256
+confidence_floor = 0.35
+
+[agent]
+name = ""
+timeout_secs = 180
+
+[twitter]
+cookie_env_var = ""
+cookie_file = ""
+bird_path = ""
+use_bird = false
+
+[github]
+token_env_var = ""
+
+# ─── Examples ──────────────────────────────────────────────────────────────
+#
+# the sections above are the defaults. these are commented out, and they are the
+# shapes a real config uses. copy one, delete the marker, and it works.
+
+# a feed, which needs nothing
+# [[sources]]
+# medium = "rss"
+# enabled = true
+#
+# [sources.options]
+# urls = ["https://blog.rust-lang.org/feed.xml"]
+
+# hacker news, which needs nothing either
+# [[sources]]
+# medium = "hackernews"
+# enabled = true
+#
+# [sources.options]
+# tag = "show_hn"       # or ask_hn, or nothing for the front page
+
+# a subreddit. reddit blocks the default user agent, so set one of your own
+# [[sources]]
+# medium = "reddit"
+# enabled = true
+#
+# [sources.options]
+# subreddit = "rust"
+# sort = "new"
+
+# github stars. needs GITHUB_TOKEN
+# [[sources]]
+# medium = "github"
+# enabled = true
+
+# x bookmarks. needs TWITTER_COOKIES, and the two cookies have to come from a
+# browser you are already signed in to
+# [[sources]]
+# medium = "x"
+# enabled = true
+#
+# [sources.options]
+# folders = ["<folder id from the bookmarks url>"]
+
+# outputs, in any mix
+# [[sinks]]
+# kind = "obsidian"
+# enabled = true
+# path = "vault"
+#
+# [[sinks]]
+# kind = "html"
+# enabled = true
+# path = "archive.html"
+#
+# [[sinks]]
+# kind = "archive"
+# enabled = true
+# path = "raw"           # one file per item, the source payload
+
+# the prose stage, which is the expensive one
+# [enrich]
+# describe = true
+#
+# [agent]
+# name = "opencode"     # or codex, or claude
+# model = "anthropic/claude-sonnet-4-5"
