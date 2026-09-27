@@ -101,15 +101,14 @@ pub fn display_title(bookmark: &Bookmark) -> String {
     // the host plus its last path segment says which page it is.
     if let Some(url) = &bookmark.url {
         let host = url.host_str().unwrap_or_default();
+        // a path usually ends in a slash, so the last split is usually empty;
+        // the last one that is not is the page
         let last = url
-            .path_segments()
-            .and_then(|segments| {
-                segments
-                    .filter(|segment| !segment.is_empty())
-                    .next_back()
-                    .map(str::to_owned)
-            })
-            .unwrap_or_default();
+            .path()
+            .rsplit('/')
+            .find(|segment| !segment.is_empty())
+            .unwrap_or_default()
+            .to_owned();
         if last.is_empty() {
             return squash(host);
         }
@@ -265,6 +264,10 @@ mod tests {
         Bookmark::new(SourceRef::new(SourceMedium::X, "1", None), text, 0)
     }
 
+    fn at(url: &str) -> Url {
+        Url::parse(url).expect("a test url parses")
+    }
+
     #[test]
     fn a_generated_title_wins() {
         let mut b = one("some text");
@@ -302,14 +305,14 @@ mod tests {
     #[test]
     fn a_bare_url_becomes_a_readable_title() {
         let mut b = one("");
-        b.url = Some(url::Url::parse("https://blog.rust-lang.org/2024/01/01/release/").unwrap());
+        b.url = Some(at("https://blog.rust-lang.org/2024/01/01/release/"));
         assert_eq!(display_title(&b), "blog.rust-lang.org · release");
     }
 
     #[test]
     fn a_url_with_no_path_becomes_its_host() {
         let mut b = one("");
-        b.url = Some(url::Url::parse("https://example.com/").unwrap());
+        b.url = Some(at("https://example.com/"));
         assert_eq!(display_title(&b), "example.com");
     }
 
