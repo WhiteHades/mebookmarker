@@ -213,10 +213,16 @@ impl Driver {
             .map_err(|e| Error::Agent(format!("{} failed: {e}", self.agent.binary())))?;
 
         if !output.status.success() {
+            // an agent reports a provider error on stdout, not stderr, and an
+            // empty message is the one thing that makes a failure impossible to
+            // act on. both streams are worth looking at, and the useful part of
+            // a json error is its message, not the envelope.
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let tail: String = stderr.lines().rev().take(4).collect::<Vec<_>>().join("; ");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let raw = if stderr.trim().is_empty() { &stdout } else { &stderr };
+            let detail = explain(raw);
             return Err(Error::Agent(format!(
-                "{} exited {}: {tail}",
+                "{} exited {}: {detail}",
                 self.agent.binary(),
                 output.status
             )));
@@ -247,6 +253,41 @@ pub struct Reply {
     pub text: String,
     /// what the agent said it did, when it says.
     pub session: Option<String>,
+}
+
+/// the useful part of an agent's failure output.
+///
+/// an agent that fails on a provider error writes a json envelope whose
+/// `error.message` is the only line a person needs, and the rest is a session
+/// id and a timestamp. anything that is not json is passed through as written.
+#[must_use]
+pub fn explain(raw: &str) -> String {
+    for line in raw.lines().rev() {
+        let line = line.trim();
+        if !line.starts_with('{') {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        if let Some(message) = value
+            .pointer("/error/message")
+            .or_else(|| value.get("message"))
+            .and_then(|m| m.as_str())
+        {
+            let kind = value
+                .pointer("/error/type")
+                .or_else(|| value.get("type"))
+                .and_then(|t| t.as_str())
+                .unwrap_or("error");
+            return format!("{kind}: {message}");
+        }
+    }
+
+    // the last few non-blank lines, oldest first: an agent that failed loudly
+    // tends to print a banner, a blank line, and then the reason
+    let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail = lines[lines.len().saturating_sub(4)..].to_vec();
+    let joined = tail.join(" | ");
+    if joined.trim().is_empty() { "no output on either stream".to_owned() } else { joined }
 }
 
 /// read an agent's output.
@@ -555,6 +596,26 @@ mod tests {
     #[test]
     fn codex_output_is_taken_as_written() {
         assert_eq!(parse_reply(Agent::Codex, b"  the answer \n"), "the answer");
+    }
+
+    #[test]
+    fn a_provider_error_reads_as_a_sentence() {
+        let raw = r#"{"type":"error","sessionID":"ses_x","error":{"type":"provider.quota","message":"Insufficient credits","status":402}}"#;
+        assert_eq!(explain(raw), "provider.quota: Insufficient credits");
+    }
+
+    #[test]
+    fn a_plain_error_reads_as_written() {
+        assert_eq!(
+            explain("could not find the model\ntry again"),
+            "could not find the model | try again"
+        );
+    }
+
+    #[test]
+    fn an_empty_error_says_so_rather_than_being_blank() {
+        assert_eq!(explain(""), "no output on either stream");
+        assert_eq!(explain("   \n  "), "no output on either stream");
     }
 
     #[test]
