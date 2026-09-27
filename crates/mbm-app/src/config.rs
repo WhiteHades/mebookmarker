@@ -418,6 +418,25 @@ impl Config {
         format!("{HEADER}{body}")
     }
 
+    /// the example's contents, which differ from a plain dump in two ways that
+    /// make it portable: the data directory is relative, and it names itself.
+    #[must_use]
+    pub fn example_toml() -> String {
+        let config = Config { data_dir: PathBuf::from("."), ..Config::default() };
+        config
+            .to_toml()
+            .replace("mebookmarker.toml", "mebookmarker.toml.example")
+    }
+
+    /// write the example, for `mbm config --init` and for a test that keeps it
+    /// current.
+    pub fn write_example(path: &Path) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
+        }
+        std::fs::write(path, Self::example_toml()).map_err(|e| Error::io(path, e))
+    }
+
     /// write the configuration out, creating the directory.
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
@@ -501,6 +520,33 @@ mod tests {
         std::fs::write(&path, "this is not toml\n").unwrap();
         let err = Config::load(&path).unwrap_err();
         assert!(err.to_string().contains("mebookmarker.toml"), "{err}");
+    }
+
+    /// the checked-in example, regenerated so it cannot drift from the defaults.
+    ///
+    /// a config example that a release changed and nobody noticed is worse than
+    /// no example, because a person trusts it. this test fails the moment the
+    /// defaults and the file disagree.
+    #[test]
+    fn the_example_config_matches_the_defaults() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mebookmarker.toml.example");
+        let Ok(existing) = std::fs::read_to_string(&path) else {
+            panic!(
+                "{} does not exist. create it with:\n    mbm config init",
+                path.display()
+            );
+        };
+        // the checked-in file carries a hand-written examples section after the
+        // generated part, so the check is that the generated part is a prefix
+        // and not a copy
+        let generated = Config::example_toml();
+        assert!(
+            existing.starts_with(&generated),
+            "the generated part of {} does not match the defaults.\nrun `mbm config --example` \
+             and keep the examples section.\n\n{}",
+            path.display(),
+            generated
+        );
     }
 
     #[test]
