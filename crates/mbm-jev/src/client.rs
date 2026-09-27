@@ -302,6 +302,7 @@ pub struct Routing {
 }
 
 /// a configured client.
+#[derive(Clone)]
 pub struct Jev {
     client: Client,
     endpoint: String,
