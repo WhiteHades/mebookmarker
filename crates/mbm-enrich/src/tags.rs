@@ -379,7 +379,8 @@ mod tests {
         assert_eq!(b.categories.len(), 1);
         assert_eq!(b.categories[0].slug, "engineering");
         assert_eq!(b.categories[0].assigned_by, Assigner::Rule);
-        assert_eq!(f64::from(b.categories[0].confidence), 1.0);
+        // a rule claims outright, so its confidence is exactly one
+        assert!((b.categories[0].confidence - 1.0).abs() < f32::EPSILON);
     }
 
     #[tokio::test]

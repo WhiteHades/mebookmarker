@@ -13,11 +13,13 @@
 //! every stage stamps its own timestamp column, so an interrupted run resumes
 //! from where it stopped with no queue to lose. see [`pipeline`].
 
+pub mod describe;
 pub mod entities;
 pub mod pipeline;
 pub mod tags;
 pub mod vision;
 
+pub use describe::{Described, Describe};
 pub use entities::Entities;
 pub use pipeline::{Plan, Report, StageReport, backlog, backlog_line, column_for, requeue, run};
 pub use tags::{CONFIDENCE_FLOOR, Categorizer, Tagger};
