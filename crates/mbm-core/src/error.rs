@@ -78,11 +78,7 @@ pub enum Error {
     Ingest(String),
 
     #[error("extract: {url}: {reason}")]
-    Extract {
-        url: String,
-
-        reason: String,
-    },
+    Extract { url: String, reason: String },
 
     #[error("jev: {0}")]
     Jev(String),
@@ -108,13 +104,7 @@ pub enum Error {
     },
 
     #[error("command `{program}` failed with {status}: {stderr}")]
-    Command {
-        program: String,
-
-        status: String,
-
-        stderr: String,
-    },
+    Command { program: String, status: String, stderr: String },
 
     #[error("timed out after {0:?}")]
     Timeout(std::time::Duration),
@@ -184,11 +174,17 @@ impl Error {
             Self::Jev(_) => Layer::Jev,
             Self::Agent(_) | Self::Command { .. } => Layer::Agent,
             Self::Sink(_) => Layer::Sink,
-            Self::Pipeline(_) => Layer::Pipeline,
-            Self::Io { .. } | Self::Http(_) | Self::Auth(_) | Self::RateLimited(_)
-            | Self::Timeout(_) | Self::NotFound(_) | Self::Invalid(_) | Self::Internal(_) => {
-                Layer::Pipeline
-            }
+            // these have no layer of their own: they are reported by a layer,
+            // and the ones that are not are the caller's own mistakes
+            Self::Pipeline(_)
+            | Self::Io { .. }
+            | Self::Http(_)
+            | Self::Auth(_)
+            | Self::RateLimited(_)
+            | Self::Timeout(_)
+            | Self::NotFound(_)
+            | Self::Invalid(_)
+            | Self::Internal(_) => Layer::Pipeline,
         }
     }
 
