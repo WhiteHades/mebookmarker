@@ -351,6 +351,10 @@ pub struct ConfigArgs {
     /// check the configuration and say what is wrong with it.
     #[arg(long)]
     pub check: bool,
+
+    /// write a portable example into the current directory.
+    #[arg(long)]
+    pub example: bool,
 }
 
 /// the interactive browser.
@@ -865,9 +869,15 @@ pub fn config_command(args: &ConfigArgs) -> Result<Output> {
     let path = Config::path_in(&default_config_dir());
 
     if args.init {
-        let config = Config::default();
-        config.save(&path)?;
+        Config::default().save(&path)?;
         return Ok(Output::line(format!("wrote {}", path.display())));
+    }
+    if args.example {
+        let target = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("mebookmarker.toml.example");
+        Config::write_example(&target)?;
+        return Ok(Output::line(format!("wrote {}", target.display())));
     }
     if args.path {
         return Ok(Output::line(path.display().to_string()));
@@ -1630,6 +1640,7 @@ mod tests {
             show: false,
             path: true,
             check: false,
+            example: false,
         })
         .unwrap();
         assert!(out.render().ends_with("mebookmarker.toml"), "{}", out.render());
