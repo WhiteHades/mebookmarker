@@ -1,0 +1,10 @@
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+
+[profile.default]
+# gxhash and the wide-string helpers refuse to compile without explicit
+# target features, so opt in to whatever this machine actually supports.
+# `native` gives the best numbers but produces a non-portable binary; use the
+# shipped `--release --locked` builds if you need a portable artifact.
