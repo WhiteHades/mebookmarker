@@ -1,51 +1,39 @@
-//! The medium taxonomy: what mebookmarker can read from, and what it can
-//! write to.
-//!
-//! A *medium* is a transport, not a format. Adding one means adding a variant
-//! here and an adapter crate module; nothing in the pipeline changes. The
-//! enums are closed on purpose — an open `String` would push the
-//! "which sources do I actually support" question out of the type system and
-//! into a match statement nobody can grep.
-
+//! the taxonomy of what can be read from and written to.
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
-/// A place bookmarks can be pulled from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SourceMedium {
-    /// X / Twitter, via the internal GraphQL client.
     X,
-    /// X / Twitter, via the external `bird` CLI. Fallback for installs that
-    /// already have `bird` and prefer its auth handling.
+
     XBird,
-    /// A JSON export of bookmarks from any supported exporter.
+
     Json,
-    /// Reddit, via public `.json` endpoints.
+
     Reddit,
-    /// Hacker News, via the Algolia and Firebase APIs.
+
     HackerNews,
-    /// GitHub stars and watchlists.
+
     Github,
-    /// `YouTube` playlists and watchlists.
+
     YouTube,
-    /// Any RSS or Atom feed.
+
     Rss,
-    /// Pinboard, Pocket, and Instapaper, via OPML and read APIs.
+
     ReadLater,
-    /// Readwise reader export.
+
     Readwise,
-    /// A browser bookmark export (Netscape `bookmarks.html` or OPML).
+
     BrowserBookmarks,
-    /// Local files: PDFs, HTML, Markdown, plain text, images.
+
     LocalFile,
-    /// Anything pasted in by hand.
+
     Manual,
 }
 
 impl SourceMedium {
-    /// Every supported source, for `--help` text and validation messages.
     pub const ALL: &'static [Self] = &[
         Self::X,
         Self::XBird,
@@ -62,7 +50,6 @@ impl SourceMedium {
         Self::Manual,
     ];
 
-    /// Canonical name, as used in config files and on the command line.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -82,7 +69,6 @@ impl SourceMedium {
         }
     }
 
-    /// Whether this source needs credentials to work.
     #[must_use]
     pub const fn requires_auth(self) -> bool {
         match self {
@@ -94,8 +80,6 @@ impl SourceMedium {
         }
     }
 
-    /// Whether this source can page, and therefore whether a full backfill is
-    /// possible rather than only the most recent N items.
     #[must_use]
     pub const fn supports_paging(self) -> bool {
         match self {
@@ -129,9 +113,6 @@ impl FromStr for SourceMedium {
             ("files", SourceMedium::LocalFile),
         ];
 
-        // Accept underscores and spaces as well as dashes, and a few
-        // spellings people actually type, so config authors are not punished
-        // for a typo that reads naturally.
         let normalised = s.trim().to_ascii_lowercase().replace(['_', ' '], "-");
         if let Some((_, medium)) = ALIASES.iter().find(|(alias, _)| *alias == normalised) {
             return Ok(*medium);
@@ -144,33 +125,29 @@ impl FromStr for SourceMedium {
     }
 }
 
-/// A place bookmarks can be written to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SinkMedium {
-    /// A chronological Markdown archive. Byte-compatible with the format the
-    /// original smaug produced, so existing archives keep rendering.
     Markdown,
-    /// An Obsidian vault: frontmatter, wikilinks, and map-of-content indexes.
+
     Obsidian,
-    /// A static, self-contained HTML site with client-side search.
+
     Html,
-    /// Comma-separated values, for spreadsheets.
+
     Csv,
-    /// Newline-delimited JSON, for streaming into other tools.
+
     Jsonl,
-    /// Pretty-printed JSON.
+
     Json,
-    /// OPML, so an export can be re-imported or read by a feed reader.
+
     Opml,
-    /// A zip of notes plus downloaded media.
+
     Archive,
-    /// The store itself, queried in place.
+
     Store,
 }
 
 impl SinkMedium {
-    /// Every supported sink.
     pub const ALL: &'static [Self] = &[
         Self::Markdown,
         Self::Obsidian,
@@ -183,7 +160,6 @@ impl SinkMedium {
         Self::Store,
     ];
 
-    /// Canonical name.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -199,11 +175,6 @@ impl SinkMedium {
         }
     }
 
-    /// Whether this sink needs the pipeline to have run enrichment first.
-    ///
-    /// Sinks that render prose need titles and summaries; structural sinks
-    /// like CSV and OPML are useful on raw imports and must therefore not
-    /// depend on any LLM having been called.
     #[must_use]
     pub const fn requires_enrichment(self) -> bool {
         matches!(self, Self::Markdown | Self::Obsidian | Self::Html)
@@ -229,44 +200,35 @@ impl FromStr for SinkMedium {
     }
 }
 
-/// What a link points at, once expanded and classified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum LinkKind {
-    /// A source-code repository.
     Repository,
-    /// A written article or blog post.
+
     Article,
-    /// An X long-form article.
+
     LongForm,
-    /// A video on any platform.
+
     Video,
-    /// An audio episode.
+
     Podcast,
-    /// A social post on some network.
+
     Post,
-    /// A still image.
+
     Image,
-    /// A discussion thread.
+
     Thread,
-    /// An academic paper.
+
     Paper,
-    /// A product or service page.
+
     Product,
-    /// A release or changelog.
+
     Release,
-    /// A bare domain we could not classify.
+
     Unknown,
 }
 
 impl LinkKind {
-    /// Whether extracting the full body is worth the network round trip.
-    ///
-    /// This is the single most important optimisation in the extractor: a
-    /// typical bookmark is a social post whose only link is to an image or a
-    /// video. Fetching and storing a few hundred kilobytes of binary media
-    /// to learn "it is a JPEG" costs far more than classifying it from the
-    /// URL, which is already in hand.
     #[must_use]
     pub const fn worth_extracting(self) -> bool {
         match self {
@@ -281,7 +243,6 @@ impl LinkKind {
         }
     }
 
-    /// Whether this kind of link carries text a human wrote at length.
     #[must_use]
     pub const fn is_prose(self) -> bool {
         matches!(self, Self::Article | Self::LongForm | Self::Paper | Self::Release)
@@ -338,18 +299,15 @@ impl FromStr for LinkKind {
     }
 }
 
-/// A medium name that does not correspond to a known variant.
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("unknown {kind} medium `{value}`")]
 pub struct UnknownMedium {
-    /// Which family the name was supposed to belong to.
     pub kind: &'static str,
-    /// What the user actually typed.
+
     pub value: String,
 }
 
 impl UnknownMedium {
-    /// The valid names for this family, for building a "did you mean" list.
     #[must_use]
     pub fn suggestions(&self, valid: impl IntoIterator<Item = &'static str>) -> Vec<&'static str> {
         let needle = self.value.to_ascii_lowercase();
@@ -364,11 +322,6 @@ impl UnknownMedium {
     }
 }
 
-/// Jaro-Winkler similarity, inlined so the core crate stays dependency-free.
-///
-/// A three-line edit distance with a bonus for shared prefixes is enough for
-/// "did you mean `reddit`"; pulling in a full string-similarity crate to
-/// suggest a medium name is not a trade worth making.
 fn jaro_winkler(a: &str, b: &str) -> f64 {
     if a.is_empty() || b.is_empty() {
         return f64::from(u8::from(a == b));
@@ -458,7 +411,6 @@ mod tests {
         let suggestions = err.suggestions(SourceMedium::ALL.iter().map(|m| m.name()));
         assert!(suggestions.contains(&"reddit"), "got {suggestions:?}");
 
-        // A completely unrelated word should not produce noise.
         let err = "zzzzzzzz".parse::<SourceMedium>().unwrap_err();
         assert!(err.suggestions(SourceMedium::ALL.iter().map(|m| m.name())).is_empty());
     }
@@ -467,7 +419,7 @@ mod tests {
     fn only_text_bearing_kinds_are_worth_extracting() {
         assert!(LinkKind::Repository.worth_extracting());
         assert!(LinkKind::Article.worth_extracting());
-        // Media links are the common case and must not trigger a fetch.
+
         assert!(!LinkKind::Image.worth_extracting());
         assert!(!LinkKind::Video.worth_extracting());
         assert!(!LinkKind::Post.worth_extracting());
@@ -475,7 +427,6 @@ mod tests {
 
     #[test]
     fn auth_and_paging_capabilities_are_consistent() {
-        // Anything that pages must be reachable on demand, which means auth.
         for m in SourceMedium::ALL {
             if m.supports_paging() {
                 assert!(m.requires_auth(), "{m} pages but claims no auth");
@@ -485,8 +436,6 @@ mod tests {
 
     #[test]
     fn link_kind_accepts_the_legacy_smaug_vocabulary() {
-        // The previous generation named these types differently; the import
-        // path still has to read archives written by it.
         assert_eq!("tweet".parse::<LinkKind>().unwrap(), LinkKind::Post);
         assert_eq!("x-article".parse::<LinkKind>().unwrap(), LinkKind::LongForm);
         assert_eq!("github".parse::<LinkKind>().unwrap(), LinkKind::Repository);
