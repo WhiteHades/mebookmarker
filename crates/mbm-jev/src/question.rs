@@ -4,10 +4,10 @@
 //! requested type rather than prose, so a caller can put the answer straight
 //! into a database column or a threshold comparison without parsing anything.
 //!
-//! - [`Boolean`] answers P(true), a probability.
-//! - [`Choice`] answers one named option and the probability of each.
-//! - [`Score`] answers a position on an ordered scale plus the probability of
-//!   each rung.
+//! - [`Question::Boolean`] answers P(true), a probability.
+//! - [`Question::Choice`] answers one named option and the probability of each.
+//! - [`Question::Score`] answers a position on an ordered scale plus the
+//!   probability of each rung.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
