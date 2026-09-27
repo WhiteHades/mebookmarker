@@ -31,6 +31,9 @@ pub enum SourceMedium {
     LocalFile,
 
     Manual,
+
+    /// a personal archive file: the markdown shape `bookmarks.md` is written in.
+    MarkdownFile,
 }
 
 impl SourceMedium {
@@ -48,6 +51,7 @@ impl SourceMedium {
         Self::BrowserBookmarks,
         Self::LocalFile,
         Self::Manual,
+        Self::MarkdownFile,
     ];
 
     #[must_use]
@@ -66,6 +70,7 @@ impl SourceMedium {
             Self::BrowserBookmarks => "browser-bookmarks",
             Self::LocalFile => "local-file",
             Self::Manual => "manual",
+            Self::MarkdownFile => "markdown-file",
         }
     }
 
@@ -74,9 +79,8 @@ impl SourceMedium {
         match self {
             Self::X | Self::XBird | Self::Reddit | Self::HackerNews | Self::Github
             | Self::YouTube | Self::ReadLater | Self::Readwise => true,
-            Self::Json | Self::Rss | Self::BrowserBookmarks | Self::LocalFile | Self::Manual => {
-                false
-            }
+            Self::Json | Self::Rss | Self::BrowserBookmarks | Self::LocalFile | Self::Manual
+            | Self::MarkdownFile => false,
         }
     }
 
@@ -85,8 +89,8 @@ impl SourceMedium {
         match self {
             Self::X | Self::XBird | Self::Reddit | Self::HackerNews | Self::Github
             | Self::ReadLater | Self::Readwise => true,
-            Self::Json | Self::YouTube | Self::Rss | Self::BrowserBookmarks
-            | Self::LocalFile | Self::Manual => false,
+            Self::Json | Self::YouTube | Self::Rss | Self::BrowserBookmarks | Self::LocalFile
+            | Self::Manual | Self::MarkdownFile => false,
         }
     }
 }
