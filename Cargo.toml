@@ -51,14 +51,14 @@ simd-json = "0.18.1"
 toml = "1.1.6"
 
 # http
-reqwest = { version = "0.13.5", default-features = false }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "http2", "charset", "gzip"] }
 base64 = "0.23.1"
 
 # storage
 rusqlite = { version = "0.40.2", features = ["bundled", "cache"] }
 
 # search & text
-neo-frizbee = "0.13.3"
+neo_frizbee = "0.13.3"
 memchr = "2.8.3"
 aho-corasick = "1.1.5"
 blake3 = "1.8.7"
