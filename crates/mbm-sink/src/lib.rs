@@ -97,8 +97,23 @@ pub fn display_title(bookmark: &Bookmark) -> String {
     {
         return squash(first);
     }
+    // a bare url is the last resort, and a whole one is unreadable as a heading.
+    // the host plus its last path segment says which page it is.
     if let Some(url) = &bookmark.url {
-        return squash(url.as_str());
+        let host = url.host_str().unwrap_or_default();
+        let last = url
+            .path_segments()
+            .and_then(|segments| {
+                segments
+                    .filter(|segment| !segment.is_empty())
+                    .next_back()
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+        if last.is_empty() {
+            return squash(host);
+        }
+        return squash(&format!("{host} · {last}"));
     }
     format!("{} {}", bookmark.source.medium.name(), bookmark.source.external_id)
 }
@@ -282,6 +297,20 @@ mod tests {
     fn a_bare_url_is_a_title_before_the_url_is_skipped() {
         let b = one("https://example.com/a\n\nand some words after");
         assert_eq!(display_title(&b), "and some words after");
+    }
+
+    #[test]
+    fn a_bare_url_becomes_a_readable_title() {
+        let mut b = one("");
+        b.url = Some(url::Url::parse("https://blog.rust-lang.org/2024/01/01/release/").unwrap());
+        assert_eq!(display_title(&b), "blog.rust-lang.org · release");
+    }
+
+    #[test]
+    fn a_url_with_no_path_becomes_its_host() {
+        let mut b = one("");
+        b.url = Some(url::Url::parse("https://example.com/").unwrap());
+        assert_eq!(display_title(&b), "example.com");
     }
 
     #[test]
