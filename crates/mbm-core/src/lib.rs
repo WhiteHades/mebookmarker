@@ -17,7 +17,7 @@ pub use bookmark::{
 pub use category::{Action, Category, CategoryRule, Taxonomy};
 pub use entity::{Entities, Sentiment};
 pub use error::{Class, Error, Layer, Result};
-pub use matcher::{CompiledTaxonomy, MatchedRule};
 pub use id::Id;
+pub use matcher::{CompiledTaxonomy, MatchedRule};
 pub use medium::{LinkKind, SinkMedium, SourceMedium, UnknownMedium};
-pub use port::{Enricher, EnrichStage, FetchPage, FetchRequest, Sink, SinkReport, Source};
+pub use port::{EnrichStage, Enricher, FetchPage, FetchRequest, Sink, SinkReport, Source};

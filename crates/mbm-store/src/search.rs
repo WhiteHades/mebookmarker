@@ -37,8 +37,8 @@
 //! form so recall survives.
 
 use crate::prefilter::Prefilter;
-use mbm_core::id::Id;
 use mbm_core::Result;
+use mbm_core::id::Id;
 use neo_frizbee::{Config, Matcher};
 use rusqlite::Connection;
 
@@ -182,11 +182,7 @@ impl<'conn> Searcher<'conn> {
         if strict.is_empty() {
             return loose;
         }
-        if self.has_hits(&strict) {
-            strict
-        } else {
-            loose
-        }
+        if self.has_hits(&strict) { strict } else { loose }
     }
 
     fn has_hits(&self, query: &str) -> bool {
@@ -194,9 +190,7 @@ impl<'conn> Searcher<'conn> {
         self.conn
             .prepare(sql)
             .and_then(|mut s| {
-                s.query_row([query], |r| r.get::<_, i64>(0))
-                    .map(|_| true)
-                    .or_else(|_| Ok(false))
+                s.query_row([query], |r| r.get::<_, i64>(0)).map(|_| true).or_else(|_| Ok(false))
             })
             .unwrap_or(false)
     }
@@ -294,11 +288,8 @@ fn fuse(exact: Vec<(Id, f64)>, fuzzy: Vec<Scored>) -> Vec<Hit> {
     // two, so a hit from a single stage is not discarded.
     // the rank order is collected as ids first, so scoring can write back
     // into `out` without holding a borrow across the loop
-    let mut bm25_order: Vec<(Id, f64)> = out
-        .iter()
-        .filter(|h| h.bm25 != 0.0)
-        .map(|h| (h.id, h.bm25))
-        .collect();
+    let mut bm25_order: Vec<(Id, f64)> =
+        out.iter().filter(|h| h.bm25 != 0.0).map(|h| (h.id, h.bm25)).collect();
     bm25_order.sort_by(|a, b| a.1.total_cmp(&b.1));
     for (position, (id, _)) in bm25_order.iter().enumerate() {
         if let Some(target) = out.iter_mut().find(|h| h.id == *id) {
@@ -307,11 +298,8 @@ fn fuse(exact: Vec<(Id, f64)>, fuzzy: Vec<Scored>) -> Vec<Hit> {
         }
     }
 
-    let mut fuzzy_order: Vec<(Id, f64)> = out
-        .iter()
-        .filter(|h| h.fuzzy > 0.0)
-        .map(|h| (h.id, h.fuzzy))
-        .collect();
+    let mut fuzzy_order: Vec<(Id, f64)> =
+        out.iter().filter(|h| h.fuzzy > 0.0).map(|h| (h.id, h.fuzzy)).collect();
     fuzzy_order.sort_by(|a, b| b.1.total_cmp(&a.1));
     for (position, (id, _)) in fuzzy_order.iter().enumerate() {
         if let Some(target) = out.iter_mut().find(|h| h.id == *id) {
@@ -379,11 +367,9 @@ pub fn build_prefilter(
         let mut stmt = conn
             .prepare("SELECT id FROM bookmark ORDER BY id")
             .map_err(|e| crate::db::store_err(&e))?;
-        let rows = stmt
-            .query_map([], |r| r.get::<_, i64>(0))
-            .map_err(|e| crate::db::store_err(&e))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| crate::db::store_err(&e))?
+        let rows =
+            stmt.query_map([], |r| r.get::<_, i64>(0)).map_err(|e| crate::db::store_err(&e))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| crate::db::store_err(&e))?
     };
 
     let mut prefilter = Prefilter::new(ids.len());

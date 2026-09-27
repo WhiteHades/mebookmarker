@@ -19,11 +19,7 @@ pub struct Author {
 impl Author {
     #[must_use]
     pub fn new(handle: impl AsRef<str>) -> Self {
-        Self {
-            handle: normalize_handle(handle.as_ref()),
-            name: None,
-            profile: None,
-        }
+        Self { handle: normalize_handle(handle.as_ref()), name: None, profile: None }
     }
 
     /// add a display name.
@@ -507,7 +503,10 @@ mod tests {
 
     #[test]
     fn media_kind_is_guessed_from_the_url_ignoring_the_query() {
-        assert_eq!(MediaKind::from_url("https://pbs.twimg.com/a.jpg?format=jpg&token=x"), MediaKind::Photo);
+        assert_eq!(
+            MediaKind::from_url("https://pbs.twimg.com/a.jpg?format=jpg&token=x"),
+            MediaKind::Photo
+        );
         assert_eq!(MediaKind::from_url("https://video.twimg.com/a.mp4"), MediaKind::Video);
         assert_eq!(MediaKind::from_url("https://x.com/a.GIF"), MediaKind::Gif);
         assert_eq!(MediaKind::from_url("https://x.com/audio.m4a"), MediaKind::Audio);

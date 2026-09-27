@@ -161,18 +161,12 @@ fn open(heading: &str, day: Option<String>) -> Entry {
 fn split_author(heading: &str) -> (Option<String>, String) {
     let trimmed = heading.trim_start();
     if let Some(rest) = trimmed.strip_prefix('@') {
-        let end = rest
-            .find(|c: char| !(c.is_alphanumeric() || c == '_'))
-            .unwrap_or(rest.len());
+        let end = rest.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(rest.len());
         let handle = &rest[..end];
         let title = rest[end..].trim_start().trim_start_matches('-').trim();
         return (
             Some(handle.to_owned()),
-            if title.is_empty() {
-                format!("@{handle}")
-            } else {
-                title.to_owned()
-            },
+            if title.is_empty() { format!("@{handle}") } else { title.to_owned() },
         );
     }
     (None, trimmed.to_owned())
@@ -281,7 +275,9 @@ pub fn to_bookmark_in(entry: &Entry, created: i64, archive_dir: Option<&Path>) -
         let kind = kind_of(label);
         if let Ok(parsed) = Url::parse(url) {
             push(&mut bookmark, parsed, kind, None);
-        } else if let Some(host) = Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned)) {
+        } else if let Some(host) =
+            Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_owned))
+        {
             bookmark.push_tag(host);
         }
     }
@@ -344,9 +340,7 @@ pub fn filed_target(filed: &str, archive_dir: Option<&Path>) -> String {
         return raw;
     };
     let path = dir.join(Path::new(&raw));
-    Url::from_file_path(&path)
-        .map(|u| u.to_string())
-        .unwrap_or(raw)
+    Url::from_file_path(&path).map(|u| u.to_string()).unwrap_or(raw)
 }
 
 /// the path part of a `- **Filed:**` line.
@@ -391,15 +385,22 @@ pub fn dedupe(entries: Vec<Entry>) -> Vec<Entry> {
 #[must_use]
 pub fn day_to_unix_ms(day: &str) -> Option<i64> {
     const MONTHS: [&str; 12] = [
-        "january", "february", "march", "april", "may", "june", "july", "august", "september",
-        "october", "november", "december",
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
     ];
     let lower = day.to_ascii_lowercase();
     // the heading opens with the weekday, so the month is somewhere in it
-    let month = MONTHS
-        .iter()
-        .position(|name| lower.contains(name))
-        .map_or(0, |i| i as i64 + 1);
+    let month = MONTHS.iter().position(|name| lower.contains(name)).map_or(0, |i| i as i64 + 1);
 
     // the first and second numbers in the string, in that order
     let numbers: Vec<i64> = lower
@@ -505,10 +506,7 @@ mod tests {
     #[test]
     fn a_what_line_becomes_the_note() {
         let entries = parse(SAMPLE).unwrap();
-        assert_eq!(
-            entries[0].note.as_deref(),
-            Some("Curated collection of papers on alignment.")
-        );
+        assert_eq!(entries[0].note.as_deref(), Some("Curated collection of papers on alignment."));
         assert_eq!(entries[1].note, None);
     }
 
@@ -636,18 +634,22 @@ mod tests {
             filed: Some("[GistHost Fork](./knowledge/articles/gisthost-fork.md)".to_owned()),
             ..Entry::default()
         };
-        let bookmark = to_bookmark_in(
-            &entry,
-            0,
-            Some(Path::new("/home/someone/notes")),
-        );
+        let bookmark = to_bookmark_in(&entry, 0, Some(Path::new("/home/someone/notes")));
         assert!(bookmark.tags.contains("filed"));
         let filed = bookmark
             .links
             .iter()
-            .find(|l| l.title.as_deref() == Some("[GistHost Fork](./knowledge/articles/gisthost-fork.md)"))
+            .find(|l| {
+                l.title.as_deref() == Some("[GistHost Fork](./knowledge/articles/gisthost-fork.md)")
+            })
             .expect("a link to the write-up");
-        assert!(filed.resolved.as_str().ends_with("/home/someone/notes/knowledge/articles/gisthost-fork.md"), "{filed:?}");
+        assert!(
+            filed
+                .resolved
+                .as_str()
+                .ends_with("/home/someone/notes/knowledge/articles/gisthost-fork.md"),
+            "{filed:?}"
+        );
     }
 
     #[test]
@@ -716,11 +718,8 @@ mod tests {
 
     #[test]
     fn an_entry_with_no_handle_still_becomes_a_bookmark() {
-        let entry = Entry {
-            title: "a title".to_owned(),
-            text: "some text".to_owned(),
-            ..Entry::default()
-        };
+        let entry =
+            Entry { title: "a title".to_owned(), text: "some text".to_owned(), ..Entry::default() };
         let bookmark = to_bookmark(&entry, 0);
         assert_eq!(bookmark.title.as_deref(), Some("a title"));
         assert!(bookmark.author.is_none());

@@ -206,8 +206,11 @@ mod tests {
         let conn = migrated();
         conn.execute("INSERT INTO bookmark(id, medium, external_id, ingested_at, entities_at) VALUES (1,'x','a',0,123)", [])
             .unwrap();
-        conn.execute("INSERT INTO bookmark(id, medium, external_id, ingested_at) VALUES (2,'x','b',0)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO bookmark(id, medium, external_id, ingested_at) VALUES (2,'x','b',0)",
+            [],
+        )
+        .unwrap();
         let n: i64 = conn
             .query_row("SELECT count(*) FROM bookmark WHERE entities_at IS NULL", [], |r| r.get(0))
             .unwrap();
@@ -224,7 +227,9 @@ mod tests {
         )
         .unwrap();
         let n: i64 = conn
-            .query_row("SELECT count(*) FROM search WHERE search MATCH 'tokenizer'", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM search WHERE search MATCH 'tokenizer'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(n, 1, "the insert trigger must have populated the index");
     }
@@ -281,7 +286,9 @@ mod tests {
         .unwrap();
         for term in ["cafe", "naive", "resume"] {
             let n: i64 = conn
-                .query_row("SELECT count(*) FROM search WHERE search MATCH ?1", [term], |r| r.get(0))
+                .query_row("SELECT count(*) FROM search WHERE search MATCH ?1", [term], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             assert_eq!(n, 1, "`{term}` should fold onto the stored text");
         }
@@ -290,8 +297,11 @@ mod tests {
     #[test]
     fn satellite_rows_are_cascaded_on_delete() {
         let conn = migrated();
-        conn.execute("INSERT INTO bookmark(id, medium, external_id, ingested_at) VALUES (1,'x','a',0)", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO bookmark(id, medium, external_id, ingested_at) VALUES (1,'x','a',0)",
+            [],
+        )
+        .unwrap();
         conn.execute("INSERT INTO tag(bookmark, tag) VALUES (1,'rust')", []).unwrap();
         conn.execute(
             "INSERT INTO link(bookmark, ordinal, original, resolved, kind) VALUES (1,0,'u','u','article')",
@@ -300,7 +310,8 @@ mod tests {
         .unwrap();
         conn.execute("DELETE FROM bookmark WHERE id = 1", []).unwrap();
         for table in ["tag", "link"] {
-            let n: i64 = conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap();
+            let n: i64 =
+                conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap();
             assert_eq!(n, 0, "{table} rows should cascade");
         }
     }

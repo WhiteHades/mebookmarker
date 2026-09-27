@@ -19,7 +19,7 @@ pub mod pipeline;
 pub mod tags;
 pub mod vision;
 
-pub use describe::{Described, Describe};
+pub use describe::{Describe, Described};
 pub use entities::Entities;
 pub use pipeline::{Plan, Report, StageReport, backlog, backlog_line, column_for, requeue, run};
 pub use tags::{CONFIDENCE_FLOOR, Categorizer, Tagger};

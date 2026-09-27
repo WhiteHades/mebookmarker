@@ -35,32 +35,17 @@ pub const COLUMNS: &[&str] = &[
 /// render one bookmark as a csv row.
 #[must_use]
 pub fn csv_row(bookmark: &Bookmark) -> String {
-    let links = bookmark
-        .links
-        .iter()
-        .map(|l| l.resolved.as_str())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let links = bookmark.links.iter().map(|l| l.resolved.as_str()).collect::<Vec<_>>().join(" ");
 
     let mut fields: Vec<String> = vec![
         bookmark.id.get().to_string(),
-        bookmark
-            .created_at
-            .map_or_else(String::new, iso8601),
+        bookmark.created_at.map_or_else(String::new, iso8601),
         bookmark.source.medium.name().to_owned(),
-        bookmark
-            .author
-            .as_ref()
-            .map_or_else(String::new, |a| a.handle.clone()),
+        bookmark.author.as_ref().map_or_else(String::new, |a| a.handle.clone()),
         display_title(bookmark),
         bookmark.url.as_ref().map_or_else(String::new, ToString::to_string),
         bookmark.tags.iter().cloned().collect::<Vec<_>>().join(" "),
-        bookmark
-            .categories
-            .iter()
-            .map(|c| c.slug.clone())
-            .collect::<Vec<_>>()
-            .join(" "),
+        bookmark.categories.iter().map(|c| c.slug.clone()).collect::<Vec<_>>().join(" "),
         bookmark.text.clone(),
         summary_of(bookmark).unwrap_or_default().to_owned(),
         links,
@@ -155,10 +140,9 @@ impl Sink for Csv {
 
     async fn finish(&self) -> Result<SinkReport> {
         let rows = {
-            let mut buffer = self
-                .items
-                .lock()
-                .map_err(|_| mbm_core::Error::Sink("the csv sink's buffer is poisoned".to_owned()))?;
+            let mut buffer = self.items.lock().map_err(|_| {
+                mbm_core::Error::Sink("the csv sink's buffer is poisoned".to_owned())
+            })?;
             std::mem::take(&mut *buffer)
         };
         let count = rows.len();
@@ -188,8 +172,12 @@ mod tests {
 
     fn one(text: &str) -> Bookmark {
         let url = Url::parse("https://x.com/a/status/1").unwrap();
-        let mut b = Bookmark::new(SourceRef::new(SourceMedium::X, "1", Some(url.clone())), text, 1_767_400_000_000)
-            .created_at(1_767_312_000_000);
+        let mut b = Bookmark::new(
+            SourceRef::new(SourceMedium::X, "1", Some(url.clone())),
+            text,
+            1_767_400_000_000,
+        )
+        .created_at(1_767_312_000_000);
         b.url = Some(url);
         b
     }
@@ -205,10 +193,8 @@ mod tests {
             .headers()
             .unwrap()
             .clone();
-        let mut records = csv::ReaderBuilder::new()
-            .has_headers(false)
-            .from_reader(row.as_bytes())
-            .into_records();
+        let mut records =
+            csv::ReaderBuilder::new().has_headers(false).from_reader(row.as_bytes()).into_records();
         let record = records.next().unwrap().unwrap();
         assert_eq!(record.len(), headers.len());
         assert_eq!(&record[2], "x");
@@ -269,13 +255,10 @@ mod tests {
         let mut b = one("post");
         b.title = Some("日本語 — a title".to_owned());
         let doc = csv_document(&[&b]);
-        let mut records = csv::ReaderBuilder::new()
-            .has_headers(false)
-            .from_reader(doc.as_bytes())
-            .into_records();
+        let mut records =
+            csv::ReaderBuilder::new().has_headers(false).from_reader(doc.as_bytes()).into_records();
         assert_eq!(&records.next().unwrap().unwrap()[4], "title", "the header row");
         let record = records.next().unwrap().unwrap();
         assert_eq!(&record[4], "日本語 — a title");
     }
-
 }

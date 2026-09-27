@@ -201,8 +201,7 @@ mod tests {
     }
 
     fn with_media(media: Vec<Media>) -> Bookmark {
-        let mut b =
-            Bookmark::new(SourceRef::new(SourceMedium::X, "1", None), "a post", 0);
+        let mut b = Bookmark::new(SourceRef::new(SourceMedium::X, "1", None), "a post", 0);
         b.media = media;
         b
     }

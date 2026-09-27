@@ -53,11 +53,7 @@ pub fn payload_name(external_id: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .take(40)
         .collect();
-    if stem.is_empty() {
-        format!("{short}.json")
-    } else {
-        format!("{stem}-{short}.json")
-    }
+    if stem.is_empty() { format!("{short}.json") } else { format!("{stem}-{short}.json") }
 }
 
 /// one line of the index.
@@ -216,8 +212,8 @@ impl Sink for Archive {
                 continue;
             }
             let entry = index_entry(item);
-            let body = serde_json::to_vec(&payload(item))
-                .map_err(|e| Error::Sink(e.to_string()))?;
+            let body =
+                serde_json::to_vec(&payload(item)).map_err(|e| Error::Sink(e.to_string()))?;
             write_to(&self.root.join(&entry.file), &body)?;
             entries.push(entry);
             files += 1;
@@ -226,11 +222,13 @@ impl Sink for Archive {
         *self
             .written
             .lock()
-            .map_err(|_| Error::Sink("the archive sink's counter is poisoned".to_owned()))? += files;
+            .map_err(|_| Error::Sink("the archive sink's counter is poisoned".to_owned()))? +=
+            files;
         *self
             .skipped
             .lock()
-            .map_err(|_| Error::Sink("the archive sink's counter is poisoned".to_owned()))? += skipped;
+            .map_err(|_| Error::Sink("the archive sink's counter is poisoned".to_owned()))? +=
+            skipped;
 
         Ok(SinkReport { written: files, files, skipped, failed: 0 })
     }
@@ -245,9 +243,7 @@ impl Sink for Archive {
         };
         let mut body = String::new();
         for entry in &entries {
-            body.push_str(
-                &serde_json::to_string(entry).map_err(|e| Error::Sink(e.to_string()))?,
-            );
+            body.push_str(&serde_json::to_string(entry).map_err(|e| Error::Sink(e.to_string()))?);
             body.push('\n');
         }
         write_to(&self.root.join("index.jsonl"), body.as_bytes())?;
@@ -260,12 +256,7 @@ impl Sink for Archive {
             .skipped
             .lock()
             .map_err(|_| Error::Sink("the archive sink's counter is poisoned".to_owned()))?;
-        Ok(SinkReport {
-            written: *written,
-            files: *written + 1,
-            skipped: *skipped,
-            failed: 0,
-        })
+        Ok(SinkReport { written: *written, files: *written + 1, skipped: *skipped, failed: 0 })
     }
 }
 
@@ -285,8 +276,12 @@ mod tests {
 
     fn with_raw(text: &str) -> Bookmark {
         let url = Url::parse("https://x.com/a/status/1").unwrap();
-        let mut b = Bookmark::new(SourceRef::new(SourceMedium::X, "1", Some(url.clone())), text, 1_767_400_000_000)
-            .created_at(1_767_312_000_000);
+        let mut b = Bookmark::new(
+            SourceRef::new(SourceMedium::X, "1", Some(url.clone())),
+            text,
+            1_767_400_000_000,
+        )
+        .created_at(1_767_312_000_000);
         b.url = Some(url);
         b.raw = Some(json!({"full_text": text, "id_str": "1"}));
         b
@@ -309,10 +304,7 @@ mod tests {
 
     #[test]
     fn the_same_id_always_gets_the_same_file() {
-        assert_eq!(
-            payload_name("1"),
-            payload_name("1")
-        );
+        assert_eq!(payload_name("1"), payload_name("1"));
     }
 
     #[test]

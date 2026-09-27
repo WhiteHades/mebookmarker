@@ -44,7 +44,10 @@ fn three_questions() -> BTreeMap<String, Question> {
     );
     q.insert(
         "worth".to_owned(),
-        Question::score("How likely is this worth reading later?", ["noise", "skim", "read", "must read"]),
+        Question::score(
+            "How likely is this worth reading later?",
+            ["noise", "skim", "read", "must read"],
+        ),
     );
     q.insert("code".to_owned(), Question::boolean("Is it primarily about software development?"));
     q
@@ -84,7 +87,10 @@ async fn structured_state_is_accepted() {
     });
 
     let mut q = BTreeMap::new();
-    q.insert("kind".to_owned(), Question::choice("what is it?", [("tool", "a tool"), ("article", "prose")]));
+    q.insert(
+        "kind".to_owned(),
+        Question::choice("what is it?", [("tool", "a tool"), ("article", "prose")]),
+    );
 
     let response = jev.evaluate(&EvaluateRequest::new(state, q)).await.expect("an answer");
     assert_eq!(response.choice("kind"), Some("tool"));
@@ -144,9 +150,14 @@ async fn concurrent_requests_all_succeed() {
         let jev = std::sync::Arc::clone(&jev);
         handles.push(tokio::spawn(async move {
             let mut q = BTreeMap::new();
-            q.insert("kind".to_owned(), Question::choice("what is it?", [("tool", "a tool"), ("article", "prose")]));
+            q.insert(
+                "kind".to_owned(),
+                Question::choice("what is it?", [("tool", "a tool"), ("article", "prose")]),
+            );
             let state = format!("bookmark number {i} about a rust tool");
-            jev.evaluate(&EvaluateRequest::new(state, q)).await.map(|r| r.choice("kind").map(str::to_owned))
+            jev.evaluate(&EvaluateRequest::new(state, q))
+                .await
+                .map(|r| r.choice("kind").map(str::to_owned))
         }));
     }
 

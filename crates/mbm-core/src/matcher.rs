@@ -46,7 +46,6 @@ pub struct CompiledTaxonomy {
     fallback_action: Action,
     /// pattern text, kept so a caller can report which rule fired.
     texts: Arc<Vec<String>>,
-
 }
 
 impl CompiledTaxonomy {
@@ -92,10 +91,10 @@ impl CompiledTaxonomy {
         let fallback_action =
             taxonomy.get(&taxonomy.fallback).map_or(Action::Capture, |c| c.action);
 
-        let automaton = AhoCorasick::builder()
-            .ascii_case_insensitive(true)
-            .build(&patterns)
-            .unwrap_or_else(|_| AhoCorasick::new([""]).expect("the fallback pattern always builds"));
+        let automaton =
+            AhoCorasick::builder().ascii_case_insensitive(true).build(&patterns).unwrap_or_else(
+                |_| AhoCorasick::new([""]).expect("the fallback pattern always builds"),
+            );
 
         Self {
             automaton: Arc::new(automaton),
@@ -242,8 +241,7 @@ pub struct MatchedRule {
 /// strip the scheme, query, and fragment from a url or host/path pair.
 fn normalise(target: &str) -> &str {
     let trimmed = target.trim();
-    let without_scheme =
-        trimmed.split_once("://").map_or(trimmed, |(_, rest)| rest);
+    let without_scheme = trimmed.split_once("://").map_or(trimmed, |(_, rest)| rest);
     without_scheme.split(['?', '#']).next().unwrap_or(without_scheme)
 }
 
@@ -264,11 +262,10 @@ mod tests {
                 .filed_to("articles")
                 .with_action(Action::File),
         );
-        t.insert(
-            Category::new("video", "Video", "#ef4444", "Video.").with_action(Action::Defer),
-        );
+        t.insert(Category::new("video", "Video", "#ef4444", "Video.").with_action(Action::Defer));
         t.insert(Category::new("general", "General", "#64748b", "Anything."));
-        t.rules.push(CategoryRule::any("repository", ["github.com", "gitlab.com", "bitbucket.org"]));
+        t.rules
+            .push(CategoryRule::any("repository", ["github.com", "gitlab.com", "bitbucket.org"]));
         t.rules.push(CategoryRule::any("article", ["medium.com", "substack.com", "arxiv.org"]));
         t.rules.push(CategoryRule::any("video", ["youtube.com", "youtu.be", "vimeo.com"]));
         t

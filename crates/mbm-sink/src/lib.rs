@@ -89,11 +89,8 @@ pub fn display_title(bookmark: &Bookmark) -> String {
     if let Some(link) = bookmark.links.iter().find_map(|l| l.title.as_deref()) {
         return squash(link);
     }
-    if let Some(first) = bookmark
-        .text
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty() && !l.starts_with("http"))
+    if let Some(first) =
+        bookmark.text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with("http"))
     {
         return squash(first);
     }
@@ -163,12 +160,7 @@ pub fn iso8601(unix_ms: i64) -> String {
     let seconds = unix_ms.div_euclid(1000);
     let (y, m, d) = civil_from(seconds.div_euclid(86_400));
     let rest = seconds.rem_euclid(86_400);
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
-        rest / 3600,
-        (rest % 3600) / 60,
-        rest % 60
-    )
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z", rest / 3600, (rest % 3600) / 60, rest % 60)
 }
 
 /// the unix day number to a `(year, month, day)` triple.
@@ -246,11 +238,7 @@ pub fn tag_list(bookmark: &Bookmark) -> Vec<String> {
 /// join a list with a separator, skipping empties.
 #[must_use]
 pub fn join_all<I: IntoIterator<Item = String>>(items: I, sep: &str) -> String {
-    items
-        .into_iter()
-        .filter(|s| !s.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join(sep)
+    items.into_iter().filter(|s| !s.trim().is_empty()).collect::<Vec<_>>().join(sep)
 }
 
 #[cfg(test)]
@@ -419,4 +407,3 @@ mod tests {
         assert_eq!(b.author.as_ref().unwrap().handle, "simonw");
     }
 }
-

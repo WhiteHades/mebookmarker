@@ -61,8 +61,10 @@ fn corpus() -> Vec<(String, String, String)> {
 
 fn open(prefix: Option<&str>) -> Connection {
     let db = Connection::open_in_memory().unwrap();
-    db.execute_batch("PRAGMA page_size = 4096; PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;")
-        .unwrap();
+    db.execute_batch(
+        "PRAGMA page_size = 4096; PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;",
+    )
+    .unwrap();
     db.execute_batch(
         "CREATE TABLE bookmark(id INTEGER PRIMARY KEY, title TEXT, body TEXT, extra TEXT);
          CREATE VIRTUAL TABLE search USING fts5(
@@ -114,15 +116,28 @@ fn main() {
         let build = t.elapsed();
 
         let size: i64 = db
-            .query_row("SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()", [], |r| r.get(0))
+            .query_row(
+                "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
 
-        println!("{label}: build {build:.2?}, {size} bytes ({:.0} B/doc)", size as f64 / DOCS as f64);
+        println!(
+            "{label}: build {build:.2?}, {size} bytes ({:.0} B/doc)",
+            size as f64 / DOCS as f64
+        );
         for (group, terms) in [("common", COMMON), ("mid", MID), ("rare", RARE)] {
             let hits: i64 = db
-                .query_row("SELECT count(*) FROM search WHERE search MATCH ?1", [terms[0]], |r| r.get(0))
+                .query_row("SELECT count(*) FROM search WHERE search MATCH ?1", [terms[0]], |r| {
+                    r.get(0)
+                })
                 .unwrap();
-            let ranked = time(&db, "SELECT rowid FROM search WHERE search MATCH ?1 ORDER BY rank LIMIT 20", terms[0]);
+            let ranked = time(
+                &db,
+                "SELECT rowid FROM search WHERE search MATCH ?1 ORDER BY rank LIMIT 20",
+                terms[0],
+            );
             let capped = time_capped(&db, terms[0]);
             let subq = time(
                 &db,
@@ -131,7 +146,11 @@ fn main() {
                  ORDER BY rank LIMIT 20",
                 terms[0],
             );
-            let prefix_q = time(&db, "SELECT rowid FROM search WHERE search MATCH ?1 ORDER BY rank LIMIT 20", &format!("{}*", &terms[0][..2]));
+            let prefix_q = time(
+                &db,
+                "SELECT rowid FROM search WHERE search MATCH ?1 ORDER BY rank LIMIT 20",
+                &format!("{}*", &terms[0][..2]),
+            );
             println!(
                 "  {group:<7} {:>7} hits | rank-all {:>8.2?}ms | cap+rank(loop) {:>8.2?}ms | cap+rank(1stmt) {:>8.2?}ms | prefix {:>8.2?}ms",
                 hits,
@@ -142,9 +161,21 @@ fn main() {
             );
         }
 
-        let single = time(&db, "SELECT rowid FROM search WHERE search MATCH ?1 ORDER BY rank LIMIT 20", PAIR[0]);
-        let both = time(&db, "SELECT rowid FROM search WHERE search MATCH ?1 ORDER BY rank LIMIT 20", &format!("{} AND {}", PAIR[0], PAIR[1]));
-        println!("  and: one term {:.2?}ms, both terms {:.2?}ms\n", single.as_secs_f64() * 1000.0, both.as_secs_f64() * 1000.0);
+        let single = time(
+            &db,
+            "SELECT rowid FROM search WHERE search MATCH ?1 ORDER BY rank LIMIT 20",
+            PAIR[0],
+        );
+        let both = time(
+            &db,
+            "SELECT rowid FROM search WHERE search MATCH ?1 ORDER BY rank LIMIT 20",
+            &format!("{} AND {}", PAIR[0], PAIR[1]),
+        );
+        println!(
+            "  and: one term {:.2?}ms, both terms {:.2?}ms\n",
+            single.as_secs_f64() * 1000.0,
+            both.as_secs_f64() * 1000.0
+        );
     }
 }
 
@@ -166,9 +197,8 @@ fn time_capped(db: &Connection, arg: &str) -> Duration {
     let t = Instant::now();
     let mut ids = Vec::with_capacity(2000);
     {
-        let mut stmt = db
-            .prepare("SELECT rowid FROM search WHERE search MATCH ?1 LIMIT 2000")
-            .unwrap();
+        let mut stmt =
+            db.prepare("SELECT rowid FROM search WHERE search MATCH ?1 LIMIT 2000").unwrap();
         for row in stmt.query_map([arg], |r| r.get::<_, i64>(0)).unwrap() {
             ids.push(row.unwrap());
         }

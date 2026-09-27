@@ -41,9 +41,8 @@ pub mod client;
 pub mod question;
 
 pub use client::{
-    Dollars,
-    DEFAULT_ENDPOINT, EvaluateRequest, EvaluateResponse, GatewayMetadata, GatewayOptions, JEV, Jev,
-    ProviderMetadata, ProviderOptions, Routing, TypeSafeMetadata, Usage,
+    DEFAULT_ENDPOINT, Dollars, EvaluateRequest, EvaluateResponse, GatewayMetadata, GatewayOptions,
+    JEV, Jev, ProviderMetadata, ProviderOptions, Routing, TypeSafeMetadata, Usage,
 };
 pub use question::{
     Answer, BooleanCriteria, MAX_CHOICE_OPTIONS, MAX_SCORE_LEVELS, MIN_SCORE_LEVELS, Question,

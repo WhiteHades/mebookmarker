@@ -23,9 +23,7 @@ use serde::{Deserialize, Serialize};
 /// the directory is one a person can find again.
 #[must_use]
 pub fn default_data_dir() -> PathBuf {
-    dirs::data_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("mebookmarker")
+    dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("mebookmarker")
 }
 
 /// the whole configuration.
@@ -256,7 +254,8 @@ impl Agent {
     #[must_use]
     pub fn driver(&self) -> Option<mbm_agent::Driver> {
         let agent = self.resolve()?;
-        let mut driver = mbm_agent::Driver::new(agent).with_timeout(Duration::from_secs(self.timeout_secs));
+        let mut driver =
+            mbm_agent::Driver::new(agent).with_timeout(Duration::from_secs(self.timeout_secs));
         if let Some(model) = &self.model {
             driver = driver.with_model(model.clone());
         }
@@ -316,9 +315,9 @@ impl Config {
     /// the file does not say.
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
-            Ok(body) => toml::from_str(&body).map_err(|e| {
-                Error::Config(format!("{}: {e}", path.display()))
-            }),
+            Ok(body) => {
+                toml::from_str(&body).map_err(|e| Error::Config(format!("{}: {e}", path.display())))
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(Error::io(path, e)),
         }
@@ -400,7 +399,9 @@ impl Config {
         }
 
         for source in &self.sources {
-            if source.enabled && source.medium == SourceMedium::X && self.twitter.cookie_env_var.is_empty()
+            if source.enabled
+                && source.medium == SourceMedium::X
+                && self.twitter.cookie_env_var.is_empty()
             {
                 return Err(Error::Config(
                     "the twitter source is enabled with no cookie_env_var to read its cookies from"
@@ -423,9 +424,7 @@ impl Config {
     #[must_use]
     pub fn example_toml() -> String {
         let config = Config { data_dir: PathBuf::from("."), ..Config::default() };
-        config
-            .to_toml()
-            .replace("mebookmarker.toml", "mebookmarker.toml.example")
+        config.to_toml().replace("mebookmarker.toml", "mebookmarker.toml.example")
     }
 
     /// write the example, for `mbm config --init` and for a test that keeps it
@@ -531,10 +530,7 @@ mod tests {
     fn the_example_config_matches_the_defaults() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mebookmarker.toml.example");
         let Ok(existing) = std::fs::read_to_string(&path) else {
-            panic!(
-                "{} does not exist. create it with:\n    mbm config init",
-                path.display()
-            );
+            panic!("{} does not exist. create it with:\n    mbm config init", path.display());
         };
         // the checked-in file carries a hand-written examples section after the
         // generated part, so the check is that the generated part is a prefix

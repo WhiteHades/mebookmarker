@@ -144,7 +144,8 @@ impl Enricher for Tagger {
         }
         if bookmark.tags.len() > self.max_tags * 4 {
             // a bookmark with hundreds of tags is a page of links, not a subject
-            let trimmed: Vec<String> = bookmark.tags.iter().take(self.max_tags * 4).cloned().collect();
+            let trimmed: Vec<String> =
+                bookmark.tags.iter().take(self.max_tags * 4).cloned().collect();
             bookmark.tags = trimmed.into_iter().collect();
         }
         Ok(())
@@ -255,15 +256,9 @@ impl Enricher for Categorizer {
             return Ok(());
         }
 
-        let mut options: std::collections::BTreeMap<String, String> = self
-            .categories
-            .iter()
-            .cloned()
-            .collect();
-        options.insert(
-            "none".to_owned(),
-            "none of the categories fit this bookmark".to_owned(),
-        );
+        let mut options: std::collections::BTreeMap<String, String> =
+            self.categories.iter().cloned().collect();
+        options.insert("none".to_owned(), "none of the categories fit this bookmark".to_owned());
 
         let state = json!({
             "text": bookmark.text.chars().take(800).collect::<String>(),
@@ -275,10 +270,7 @@ impl Enricher for Categorizer {
             .ask(
                 &state,
                 "category",
-                Question::choice(
-                    "Which single category does this bookmark belong in?",
-                    options,
-                ),
+                Question::choice("Which single category does this bookmark belong in?", options),
             )
             .await
             .map_err(|e| Error::Jev(e.to_string()))?;
@@ -305,11 +297,8 @@ impl Enricher for Categorizer {
             }];
             return Ok(());
         }
-        bookmark.categories = vec![CategoryAssignment {
-            slug: chosen,
-            confidence,
-            assigned_by: Assigner::Jev,
-        }];
+        bookmark.categories =
+            vec![CategoryAssignment { slug: chosen, confidence, assigned_by: Assigner::Jev }];
         Ok(())
     }
 }

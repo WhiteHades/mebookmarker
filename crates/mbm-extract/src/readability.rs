@@ -54,11 +54,7 @@ const JUNK_TAGS: &[&str] = &[
 ];
 
 /// meta names that carry a description, in the order they are trusted.
-const DESCRIPTION_KEYS: &[&str] = &[
-    "description",
-    "og:description",
-    "twitter:description",
-];
+const DESCRIPTION_KEYS: &[&str] = &["description", "og:description", "twitter:description"];
 
 /// meta names that carry an author.
 const AUTHOR_KEYS: &[&str] = &["author", "article:author", "og:article:author"];
@@ -187,10 +183,7 @@ pub fn visible_text(html: &str) -> usize {
 
 /// the tag name at the start of a tag, lowercased.
 fn tag_name(tag: &str) -> String {
-    tag.trim_start_matches('<')
-        .chars()
-        .take_while(char::is_ascii_alphanumeric)
-        .collect::<String>()
+    tag.trim_start_matches('<').chars().take_while(char::is_ascii_alphanumeric).collect::<String>()
 }
 
 /// the text of the paragraphs that look like article body.
@@ -199,7 +192,8 @@ fn tag_name(tag: &str) -> String {
 /// link density, and the highest-scoring ones are kept in document order. a
 /// paragraph that is mostly links is a navigation list, not prose.
 fn best_paragraphs(html: &str, lower: &str) -> String {
-    const BLOCKS: &[&str] = &["<p", "<li", "<blockquote", "<h1", "<h2", "<h3", "<h4", "<pre", "<td"];
+    const BLOCKS: &[&str] =
+        &["<p", "<li", "<blockquote", "<h1", "<h2", "<h3", "<h4", "<pre", "<td"];
     const CLOSERS: &[(&str, &str)] = &[
         ("<p", "</p>"),
         ("<li", "</li>"),
@@ -241,11 +235,8 @@ fn best_paragraphs(html: &str, lower: &str) -> String {
     scores.sort_unstable_by(|a, b| b.total_cmp(a));
     let cutoff = scores[(scores.len() * 3 / 4).min(scores.len() - 1)].max(1.0);
 
-    let mut kept: Vec<&str> = blocks
-        .iter()
-        .filter(|(_, _, s)| *s >= cutoff)
-        .map(|(_, t, _)| t.as_str())
-        .collect();
+    let mut kept: Vec<&str> =
+        blocks.iter().filter(|(_, _, s)| *s >= cutoff).map(|(_, t, _)| t.as_str()).collect();
     kept.dedup();
     kept.join("\n\n")
 }
@@ -268,10 +259,7 @@ fn next_block(
                 continue;
             }
             if best.is_none_or(|(b, _, _)| at < b) {
-                let closer = closers
-                    .iter()
-                    .find(|(o, _)| *o == open)
-                    .map_or("", |(_, c)| *c);
+                let closer = closers.iter().find(|(o, _)| *o == open).map_or("", |(_, c)| *c);
                 if closer.is_empty() {
                     continue;
                 }
@@ -313,9 +301,21 @@ fn score(text: &str) -> f64 {
 /// whether a block reads like a menu, a share bar, or a cookie notice.
 fn looks_like_chrome(text: &str) -> bool {
     const CHROME: &[&str] = &[
-        "cookie", "accept all", "sign in", "log in", "subscribe", "newsletter", "share this",
-        "read more", "related posts", "follow us", "advertisement", "privacy policy",
-        "terms of service", "all rights reserved", "skip to content",
+        "cookie",
+        "accept all",
+        "sign in",
+        "log in",
+        "subscribe",
+        "newsletter",
+        "share this",
+        "read more",
+        "related posts",
+        "follow us",
+        "advertisement",
+        "privacy policy",
+        "terms of service",
+        "all rights reserved",
+        "skip to content",
     ];
     let lower = text.to_ascii_lowercase();
     CHROME.iter().filter(|c| lower.contains(*c)).count() >= 2
@@ -479,7 +479,10 @@ mod tests {
 
     #[test]
     fn the_title_comes_out() {
-        assert_eq!(read(ARTICLE, "https://example.com").title.as_deref(), Some("Rewriting SQLite in Rust"));
+        assert_eq!(
+            read(ARTICLE, "https://example.com").title.as_deref(),
+            Some("Rewriting SQLite in Rust")
+        );
     }
 
     #[test]
@@ -506,18 +509,29 @@ mod tests {
 
     #[test]
     fn the_base_url_is_used_when_the_page_declares_none() {
-        assert_eq!(read("<html><body><p>x</p></body></html>", "https://example.com/a").canonical.as_deref(), Some("https://example.com/a"));
+        assert_eq!(
+            read("<html><body><p>x</p></body></html>", "https://example.com/a")
+                .canonical
+                .as_deref(),
+            Some("https://example.com/a")
+        );
     }
 
     #[test]
     fn a_declared_canonical_url_wins() {
         let html = r#"<html><head><link rel="canonical" href="https://example.com/final"></head><body></body></html>"#;
-        assert_eq!(read(html, "https://example.com/a").canonical.as_deref(), Some("https://example.com/final"));
+        assert_eq!(
+            read(html, "https://example.com/a").canonical.as_deref(),
+            Some("https://example.com/final")
+        );
     }
 
     #[test]
     fn a_page_with_no_prose_is_reported_as_empty() {
-        let a = read("<html><body><nav><a href='/'>home</a></nav></body></html>", "https://example.com");
+        let a = read(
+            "<html><body><nav><a href='/'>home</a></nav></body></html>",
+            "https://example.com",
+        );
         assert!(!a.is_usable());
         assert_eq!(a.blocked, Some(BlockedReason::Empty));
     }
@@ -571,7 +585,8 @@ mod tests {
 
     #[test]
     fn whitespace_collapses_to_single_spaces() {
-        let a = read("<html><body><p>lots   of\n\tspace  here, and a period.</p></body></html>", "u");
+        let a =
+            read("<html><body><p>lots   of\n\tspace  here, and a period.</p></body></html>", "u");
         assert!(a.title.is_none() || a.title.is_some());
         assert!(!a.body.contains("  "), "double space survived: {:?}", a.body);
     }
@@ -631,7 +646,8 @@ mod visible_tests {
 
     #[test]
     fn visible_text_drops_script_and_style_contents() {
-        let html = "<html><body><script>var averyLongVariableName = 1;</script><p>hi</p></body></html>";
+        let html =
+            "<html><body><script>var averyLongVariableName = 1;</script><p>hi</p></body></html>";
         assert_eq!(visible_text(html), 2, "the script body must not count");
     }
 
@@ -641,4 +657,3 @@ mod visible_tests {
         assert!(visible_text(html) < 50, "got {}", visible_text(html));
     }
 }
-

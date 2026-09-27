@@ -100,13 +100,8 @@ pub enum EnrichStage {
 }
 
 impl EnrichStage {
-    pub const ALL: &'static [Self] = &[
-        Self::Entities,
-        Self::Vision,
-        Self::Tags,
-        Self::Categorize,
-        Self::Describe,
-    ];
+    pub const ALL: &'static [Self] =
+        &[Self::Entities, Self::Vision, Self::Tags, Self::Categorize, Self::Describe];
 
     #[must_use]
     pub const fn label(self) -> &'static str {
@@ -147,16 +142,12 @@ impl std::str::FromStr for EnrichStage {
 
     fn from_str(s: &str) -> Result<Self> {
         let normalised = s.trim().to_ascii_lowercase();
-        Self::ALL
-            .iter()
-            .copied()
-            .find(|stage| stage.label() == normalised)
-            .ok_or_else(|| {
-                crate::Error::Config(format!(
-                    "unknown enrichment stage `{s}`: expected one of {}",
-                    Self::ALL.iter().map(|s| s.label()).collect::<Vec<_>>().join(", ")
-                ))
-            })
+        Self::ALL.iter().copied().find(|stage| stage.label() == normalised).ok_or_else(|| {
+            crate::Error::Config(format!(
+                "unknown enrichment stage `{s}`: expected one of {}",
+                Self::ALL.iter().map(|s| s.label()).collect::<Vec<_>>().join(", ")
+            ))
+        })
     }
 }
 
@@ -224,7 +215,9 @@ mod tests {
     #[test]
     fn only_entity_extraction_is_free() {
         assert!(!EnrichStage::Entities.is_remote());
-        for stage in [EnrichStage::Vision, EnrichStage::Tags, EnrichStage::Categorize, EnrichStage::Describe] {
+        for stage in
+            [EnrichStage::Vision, EnrichStage::Tags, EnrichStage::Categorize, EnrichStage::Describe]
+        {
             assert!(stage.is_remote(), "{stage} costs money and must be reported as remote");
         }
     }

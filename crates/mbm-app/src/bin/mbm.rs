@@ -8,8 +8,8 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use clap::Parser;
-use mbm_app::cli::{self, Cli, Command, Output};
 use mbm_app::Config;
+use mbm_app::cli::{self, Cli, Command, Output};
 use mbm_core::error::{Error, Result};
 use mbm_core::port::EnrichStage;
 use mbm_store::Repo;
@@ -50,11 +50,7 @@ fn main() -> ExitCode {
                     println!("{line}");
                 }
             }
-            if output.failed {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            }
+            if output.failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
         }
         Err(e) => {
             eprintln!("{e}");
@@ -73,7 +69,6 @@ async fn dispatch(cli: &Cli) -> Result<Output> {
     if let Command::Config(args) = &cli.command {
         return cli::config_command(args);
     }
-
 
     let conn = mbm_app::pipeline::open(&config)?;
 
@@ -107,14 +102,12 @@ fn stats(conn: &rusqlite::Connection) -> Output {
     out = out.with(format!("{total} bookmarks"));
 
     for stage in EnrichStage::ALL {
-        let waiting = repo
-            .pending(mbm_enrich::column_for(*stage))
-            .unwrap_or(0);
+        let waiting = repo.pending(mbm_enrich::column_for(*stage)).unwrap_or(0);
         out = out.with(format!("  {stage:<12} {waiting} waiting"));
     }
 
-    if let Ok(mut stmt) = conn
-        .prepare("SELECT medium, count(*) FROM bookmark GROUP BY medium ORDER BY 2 DESC, 1")
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT medium, count(*) FROM bookmark GROUP BY medium ORDER BY 2 DESC, 1")
     {
         let rows: Vec<(String, i64)> = stmt
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))

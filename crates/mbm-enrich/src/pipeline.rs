@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mbm_core::bookmark::Bookmark;
-use mbm_core::id::Id;
 use mbm_core::error::{Error, Result};
+use mbm_core::id::Id;
 use mbm_core::port::{EnrichStage, Enricher};
 use mbm_store::{Filter, Repo};
 use rusqlite::Connection;
@@ -202,9 +202,8 @@ pub async fn run(conn: &Connection, plan: &Plan) -> Result<Report> {
                 break;
             }
 
-            let page_size = plan.limit.map_or(plan.page, |limit| {
-                plan.page.min(limit - stage_report.seen)
-            });
+            let page_size =
+                plan.limit.map_or(plan.page, |limit| plan.page.min(limit - stage_report.seen));
             let ids = repo.pending_ids(column, after, page_size)?;
             if ids.is_empty() {
                 break;
@@ -343,8 +342,11 @@ fn write_back(
             repo.set_indexed_text(id, bookmark.title.as_deref(), &indexed_text(bookmark))?;
         }
         EnrichStage::Describe => {
-            Repo::new(tx)
-                .set_described(id, bookmark.title.as_deref(), summary_of(bookmark).as_deref())?;
+            Repo::new(tx).set_described(
+                id,
+                bookmark.title.as_deref(),
+                summary_of(bookmark).as_deref(),
+            )?;
         }
         _ => {}
     }
@@ -357,8 +359,7 @@ fn write_back(
 /// clear the column, run the stage, and every row goes through it again.
 pub fn requeue(conn: &Connection, stage: EnrichStage) -> Result<usize> {
     let column = column_for(stage);
-    conn.execute(&format!("UPDATE bookmark SET {column} = NULL"), [])
-        .map_err(|e| store(&e))
+    conn.execute(&format!("UPDATE bookmark SET {column} = NULL"), []).map_err(|e| store(&e))
 }
 
 /// how many rows each stage is holding up, for the tui's status line.
@@ -399,11 +400,7 @@ pub fn backlog_line(conn: &Connection) -> String {
 }
 
 /// the rows a stage would take, for a caller that wants to drive the work itself.
-pub fn next_batch(
-    conn: &Connection,
-    stage: EnrichStage,
-    limit: usize,
-) -> Result<Vec<Bookmark>> {
+pub fn next_batch(conn: &Connection, stage: EnrichStage, limit: usize) -> Result<Vec<Bookmark>> {
     let repo = Repo::new(conn);
     let ids = repo.pending_ids(column_for(stage), None, limit)?;
     let mut out = Vec::with_capacity(ids.len());
@@ -428,11 +425,8 @@ pub fn facets(conn: &Connection) -> Result<(Vec<(String, usize)>, usize)> {
 /// filled one in, and otherwise is the opening of the text, which is the best
 /// available answer for a short post that needs no summary at all.
 fn summary_of(bookmark: &Bookmark) -> Option<String> {
-    if let Some(generated) = bookmark
-        .links
-        .iter()
-        .find_map(|l| l.summary.as_deref())
-        .filter(|s| !s.trim().is_empty())
+    if let Some(generated) =
+        bookmark.links.iter().find_map(|l| l.summary.as_deref()).filter(|s| !s.trim().is_empty())
     {
         return Some(generated.to_owned());
     }
@@ -591,8 +585,8 @@ mod tests {
     async fn a_limit_stops_a_stage_early() {
         let (_dir, conn) = open();
         seed(&conn, 10);
-        let plan = Plan::new(vec![Arc::new(Recorder::new(EnrichStage::Entities))])
-            .with_limit(Some(4));
+        let plan =
+            Plan::new(vec![Arc::new(Recorder::new(EnrichStage::Entities))]).with_limit(Some(4));
         let report = run(&conn, &plan).await.unwrap();
         assert_eq!(report.total_done(), 4);
         assert_eq!(Repo::new(&conn).pending("entities_at").unwrap(), 6);
@@ -656,8 +650,7 @@ mod tests {
         let plan = Plan::new(vec![Arc::new(Recorder::new(EnrichStage::Entities))]);
         run(&conn, &plan).await.unwrap();
         for stage in EnrichStage::ALL {
-            conn.execute(&format!("UPDATE bookmark SET {} = 1", column_for(*stage)), [])
-                .unwrap();
+            conn.execute(&format!("UPDATE bookmark SET {} = 1", column_for(*stage)), []).unwrap();
         }
         assert_eq!(backlog_line(&conn), "1 bookmarks, all stages clear");
     }

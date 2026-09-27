@@ -113,8 +113,8 @@ impl Question {
                 "a choice question allows {MAX_CHOICE_OPTIONS} options, got {}",
                 criteria.len()
             )),
-            Self::Score { criteria, .. } if !(MIN_SCORE_LEVELS..=MAX_SCORE_LEVELS)
-                .contains(&criteria.len()) =>
+            Self::Score { criteria, .. }
+                if !(MIN_SCORE_LEVELS..=MAX_SCORE_LEVELS).contains(&criteria.len()) =>
             {
                 Err(format!(
                     "a score question needs {MIN_SCORE_LEVELS} to {MAX_SCORE_LEVELS} rungs, got {}",
@@ -205,9 +205,7 @@ impl Answer {
     #[must_use]
     pub fn probability_of(&self, key: &str) -> Option<f64> {
         match self {
-            Self::Boolean { probability } => key
-                .strip_prefix("prob:")
-                .map(|_| *probability),
+            Self::Boolean { probability } => key.strip_prefix("prob:").map(|_| *probability),
             Self::Choice { probabilities, .. } | Self::Score { probabilities, .. } => {
                 probabilities.get(key).copied()
             }

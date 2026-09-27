@@ -311,7 +311,11 @@ mod tests {
     #[test]
     fn code_hosts_are_repositories() {
         for host in ["github.com", "gitlab.com", "codeberg.org", "bitbucket.org", "sr.ht"] {
-            assert_eq!(classify(&url(&format!("https://{host}/a/b"))), LinkKind::Repository, "{host}");
+            assert_eq!(
+                classify(&url(&format!("https://{host}/a/b"))),
+                LinkKind::Repository,
+                "{host}"
+            );
         }
     }
 
@@ -374,10 +378,7 @@ mod tests {
 
     #[test]
     fn canonical_drops_the_fragment_and_a_bare_trailing_slash() {
-        assert_eq!(
-            canonical(&url("https://example.com/a#section")),
-            "https://example.com/a"
-        );
+        assert_eq!(canonical(&url("https://example.com/a#section")), "https://example.com/a");
         // `url` normalises a bare host to a single slash and re-adds it on
         // display, so the slash stays
         assert_eq!(canonical(&url("https://example.com/")), "https://example.com/");

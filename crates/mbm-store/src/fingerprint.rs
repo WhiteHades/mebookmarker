@@ -7,8 +7,8 @@
 //! exact band values finds the candidates in one pass. cost is 8 bytes per
 //! bookmark.
 
-use mbm_core::error::{Error, Result};
 use blake3;
+use mbm_core::error::{Error, Result};
 use rusqlite::Connection;
 
 /// how many bands the fingerprint is split into.
@@ -236,8 +236,7 @@ mod tests {
         for suffix in ["!", ".", "?", " indeed", " today"] {
             let a = fingerprint(tokens(base));
             let b = fingerprint(tokens(&format!("{base}{suffix}")));
-            let agreed =
-                bands(a).iter().zip(bands(b).iter()).filter(|(x, y)| x == y).count();
+            let agreed = bands(a).iter().zip(bands(b).iter()).filter(|(x, y)| x == y).count();
             if hamming(a, b) <= 3 {
                 shared += 1;
                 assert!(agreed > 0, "distance {} and no shared band", hamming(a, b));

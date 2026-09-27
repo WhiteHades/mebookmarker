@@ -102,7 +102,11 @@ impl CategoryRule {
     pub fn any(slug: &str, patterns: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self {
             slug: slug.to_owned(),
-            match_any: patterns.into_iter().map(Into::into).map(|p| p.to_ascii_lowercase()).collect(),
+            match_any: patterns
+                .into_iter()
+                .map(Into::into)
+                .map(|p| p.to_ascii_lowercase())
+                .collect(),
             match_all: Vec::new(),
             action: None,
         }
@@ -110,7 +114,8 @@ impl CategoryRule {
 
     #[must_use]
     pub fn requiring(mut self, patterns: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        self.match_all = patterns.into_iter().map(Into::into).map(|p| p.to_ascii_lowercase()).collect();
+        self.match_all =
+            patterns.into_iter().map(Into::into).map(|p| p.to_ascii_lowercase()).collect();
         self
     }
 
@@ -121,16 +126,14 @@ impl CategoryRule {
     }
 
     #[must_use]
-    pub fn matches(&self, target: &str) -> bool {    // strips scheme, query, and fragment first, so a pattern matches the host
-    // and path only
+    pub fn matches(&self, target: &str) -> bool {
+        // strips scheme, query, and fragment first, so a pattern matches the host
+        // and path only
 
         if self.match_any.is_empty() {
             return false;
         }
-        let trimmed = target
-            .trim()
-            .split_once("://")
-            .map_or(target.trim(), |(_, rest)| rest);
+        let trimmed = target.trim().split_once("://").map_or(target.trim(), |(_, rest)| rest);
         let host_and_path = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
         let folded = host_and_path.to_ascii_lowercase();
         if !self.match_any.iter().any(|p| folded.contains(p.as_str())) {
@@ -182,11 +185,37 @@ impl Taxonomy {
         taxonomy.insert(Category::new("general", "General", "#6b7280", "everything else"));
 
         for (slug, needles) in [
-            ("engineering", vec!["github.com", "gitlab.com", "arxiv.org", "docs.rs", "crates.io", "developer.mozilla.org", "stackoverflow.com"]),
-            ("design", vec!["figma.com", "dribbble.com", "awwwards.com", "fonts.google.com", "typewolf.com"]),
+            (
+                "engineering",
+                vec![
+                    "github.com",
+                    "gitlab.com",
+                    "arxiv.org",
+                    "docs.rs",
+                    "crates.io",
+                    "developer.mozilla.org",
+                    "stackoverflow.com",
+                ],
+            ),
+            (
+                "design",
+                vec![
+                    "figma.com",
+                    "dribbble.com",
+                    "awwwards.com",
+                    "fonts.google.com",
+                    "typewolf.com",
+                ],
+            ),
             ("business", vec!["substack.com", "stripe.com", "a16z.com", "bloomberg.com"]),
-            ("science", vec!["nature.com", "science.org", "arxiv.org", "quantamagazine.org", "nasa.gov"]),
-            ("news", vec!["reuters.com", "apnews.com", "bbc.com", "theverge.com", "arstechnica.com"]),
+            (
+                "science",
+                vec!["nature.com", "science.org", "arxiv.org", "quantamagazine.org", "nasa.gov"],
+            ),
+            (
+                "news",
+                vec!["reuters.com", "apnews.com", "bbc.com", "theverge.com", "arstechnica.com"],
+            ),
             ("media", vec!["youtube.com", "youtu.be", "vimeo.com", "spotify.com", "twitch.tv"]),
             ("reading", vec!["readwise.io", "pocket.com", "instapaper.com"]),
         ] {
@@ -202,11 +231,7 @@ impl Taxonomy {
 
     #[must_use]
     pub fn empty() -> Self {
-        Self {
-            categories: BTreeMap::new(),
-            rules: Vec::new(),
-            fallback: default_fallback(),
-        }
+        Self { categories: BTreeMap::new(), rules: Vec::new(), fallback: default_fallback() }
     }
 
     pub fn insert(&mut self, category: Category) -> Option<Category> {
@@ -228,12 +253,14 @@ impl Taxonomy {
                 .action
                 .or_else(|| self.categories.get(&rule.slug).map(|c| c.action))
                 .unwrap_or(Action::Capture);
-            let slug =
-                if self.categories.contains_key(&rule.slug) { rule.slug.clone() } else { self.fallback.clone() };
+            let slug = if self.categories.contains_key(&rule.slug) {
+                rule.slug.clone()
+            } else {
+                self.fallback.clone()
+            };
             return (slug, action);
         }
-        let action =
-            self.categories.get(&self.fallback).map_or(Action::Capture, |c| c.action);
+        let action = self.categories.get(&self.fallback).map_or(Action::Capture, |c| c.action);
         (self.fallback.clone(), action)
     }
 
@@ -287,11 +314,22 @@ mod tests {
 
     fn taxonomy() -> Taxonomy {
         let mut t = Taxonomy::empty();
-        t.insert(Category::new("repository", "Repository", "#06b6d4", "Source code.").filed_to("tools").with_action(Action::File));
-        t.insert(Category::new("article", "Article", "#ec4899", "Written prose.").filed_to("articles").with_action(Action::File));
+        t.insert(
+            Category::new("repository", "Repository", "#06b6d4", "Source code.")
+                .filed_to("tools")
+                .with_action(Action::File),
+        );
+        t.insert(
+            Category::new("article", "Article", "#ec4899", "Written prose.")
+                .filed_to("articles")
+                .with_action(Action::File),
+        );
         t.insert(Category::new("general", "General", "64748b", "Anything else."));
         t.rules.push(CategoryRule::any("repository", ["github.com", "gitlab.com"]));
-        t.rules.push(CategoryRule::any("article", ["medium.com", "substack.com", "/blog", "arxiv.org"]));
+        t.rules.push(CategoryRule::any(
+            "article",
+            ["medium.com", "substack.com", "/blog", "arxiv.org"],
+        ));
         t
     }
 
@@ -324,9 +362,7 @@ mod tests {
     fn match_all_narrows_a_rule() {
         let mut t = Taxonomy::empty();
         t.insert(Category::new("research", "Research", "#3b82f6", "Papers.").filed_to("papers"));
-        t.rules.push(
-            CategoryRule::any("research", ["arxiv.org"]).requiring(["/abs/"]),
-        );
+        t.rules.push(CategoryRule::any("research", ["arxiv.org"]).requiring(["/abs/"]));
         assert_eq!(t.route("arxiv.org/abs/1234").0, "research");
         assert_eq!(t.route("arxiv.org/list/cs.AI").0, "general");
     }

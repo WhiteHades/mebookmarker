@@ -40,7 +40,10 @@ pub fn markdown(bookmark: &Bookmark) -> String {
         meta.push(format!("category: {}", category.slug));
     }
     if !bookmark.tags.is_empty() {
-        meta.push(format!("tags: {}", bookmark.tags.iter().cloned().collect::<Vec<_>>().join(", ")));
+        meta.push(format!(
+            "tags: {}",
+            bookmark.tags.iter().cloned().collect::<Vec<_>>().join(", ")
+        ));
     }
     for line in &meta {
         let _ = writeln!(out, "- {line}");
@@ -61,11 +64,8 @@ pub fn markdown(bookmark: &Bookmark) -> String {
         out.push_str("\n\n");
     }
 
-    let other: Vec<&mbm_core::bookmark::Link> = bookmark
-        .links
-        .iter()
-        .filter(|l| Some(&l.resolved) != bookmark.url.as_ref())
-        .collect();
+    let other: Vec<&mbm_core::bookmark::Link> =
+        bookmark.links.iter().filter(|l| Some(&l.resolved) != bookmark.url.as_ref()).collect();
     if !other.is_empty() {
         out.push_str("## links\n\n");
         for link in other {
@@ -128,22 +128,26 @@ pub fn obsidian(bookmark: &Bookmark) -> String {
     if let Some(url) = &bookmark.url {
         let _ = writeln!(out, "url: {url}");
     }
-    let categories: Vec<&str> = bookmark
-        .categories
-        .iter()
-        .map(|c| c.slug.as_str())
-        .collect();
+    let categories: Vec<&str> = bookmark.categories.iter().map(|c| c.slug.as_str()).collect();
     if !categories.is_empty() {
         let _ = writeln!(out, "categories: [{}]", categories.join(", "));
     }
     if !bookmark.tags.is_empty() {
-        let _ = writeln!(out, "tags: [{}]", bookmark.tags.iter().cloned().collect::<Vec<_>>().join(", "));
+        let _ = writeln!(
+            out,
+            "tags: [{}]",
+            bookmark.tags.iter().cloned().collect::<Vec<_>>().join(", ")
+        );
     }
     out.push_str("---\n\n");
 
     // a wikilink to each category is what makes the note graph useful
     if !categories.is_empty() {
-        let _ = write!(out, "{}\n\n", categories.iter().map(|c| format!("[[{c}]]")).collect::<Vec<_>>().join(" "));
+        let _ = write!(
+            out,
+            "{}\n\n",
+            categories.iter().map(|c| format!("[[{c}]]")).collect::<Vec<_>>().join(" ")
+        );
     }
     if let Some(author) = &bookmark.author {
         let _ = write!(out, "@{}\n\n", author.handle);
@@ -172,15 +176,9 @@ pub fn yaml_string(raw: &str) -> String {
 pub fn note_name(bookmark: &Bookmark) -> String {
     let title = display_title(bookmark);
     let slug = safe_filename(&title, "bookmark");
-    let day = bookmark
-        .created_at
-        .or(Some(bookmark.ingested_at))
-        .map_or_else(String::new, date_only);
-    if day.is_empty() {
-        slug
-    } else {
-        format!("{day} {slug}")
-    }
+    let day =
+        bookmark.created_at.or(Some(bookmark.ingested_at)).map_or_else(String::new, date_only);
+    if day.is_empty() { slug } else { format!("{day} {slug}") }
 }
 
 /// a daily index, newest day first.
@@ -203,15 +201,10 @@ pub fn index(items: &[(String, &Bookmark)]) -> String {
     for day in days {
         let _ = write!(out, "## {day}\n\n");
         for (name, bookmark) in items.iter().filter(|(_, b)| {
-            b.created_at
-                .or(Some(b.ingested_at))
-                .is_some_and(|ms| date_only(ms) == day)
+            b.created_at.or(Some(b.ingested_at)).is_some_and(|ms| date_only(ms) == day)
         }) {
-            let author = bookmark
-                .author
-                .as_ref()
-                .map(|a| format!(" — @{}", a.handle))
-                .unwrap_or_default();
+            let author =
+                bookmark.author.as_ref().map(|a| format!(" — @{}", a.handle)).unwrap_or_default();
             let _ = writeln!(out, "- [[{name}]]{author}");
         }
         out.push('\n');
@@ -261,11 +254,7 @@ impl Markdown {
 
 impl Clone for Markdown {
     fn clone(&self) -> Self {
-        Self {
-            root: self.root.clone(),
-            obsidian: self.obsidian,
-            written: Mutex::new(0),
-        }
+        Self { root: self.root.clone(), obsidian: self.obsidian, written: Mutex::new(0) }
     }
 }
 
@@ -294,11 +283,9 @@ impl Sink for Markdown {
         }
 
         write_to(&self.root.join("index.md"), index(&names).as_bytes())?;
-        *self
-            .written
-            .lock()
-            .map_err(|_| mbm_core::Error::Sink("the markdown sink's counter is poisoned".to_owned()))? +=
-            items.len();
+        *self.written.lock().map_err(|_| {
+            mbm_core::Error::Sink("the markdown sink's counter is poisoned".to_owned())
+        })? += items.len();
 
         Ok(SinkReport { written: items.len(), files: files + 1, ..SinkReport::default() })
     }
@@ -313,8 +300,12 @@ mod tests {
 
     fn one(text: &str) -> Bookmark {
         let url = Url::parse("https://x.com/a/status/1").unwrap();
-        let mut b = Bookmark::new(SourceRef::new(SourceMedium::X, "1", Some(url.clone())), text, 1_767_400_000_000)
-            .created_at(1_767_312_000_000);
+        let mut b = Bookmark::new(
+            SourceRef::new(SourceMedium::X, "1", Some(url.clone())),
+            text,
+            1_767_400_000_000,
+        )
+        .created_at(1_767_312_000_000);
         b.url = Some(url);
         b
     }

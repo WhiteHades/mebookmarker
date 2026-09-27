@@ -246,9 +246,9 @@ pub fn is_tld(raw: &str) -> bool {
         "com", "org", "net", "edu", "gov", "mil", "int", "io", "dev", "app", "ai", "me", "tv",
         "sh", "fm", "ly", "is", "it", "at", "so", "to", "cc", "gg", "st", "im", "one", "blog",
         "wiki", "news", "info", "biz", "cloud", "tech", "xyz", "online", "site", "page", "link",
-        "click", "rss", "moe", "best", "pro", "eu", "us", "uk", "de", "fr", "jp", "ru", "br",
-        "in", "cn", "au", "ca", "nl", "se", "no", "fi", "dk", "es", "pl", "ch", "be", "cz",
-        "gr", "hu", "ie", "nz", "pt", "ro", "sg", "tr", "ua", "za", "kr", "co", "tv", "fm",
+        "click", "rss", "moe", "best", "pro", "eu", "us", "uk", "de", "fr", "jp", "ru", "br", "in",
+        "cn", "au", "ca", "nl", "se", "no", "fi", "dk", "es", "pl", "ch", "be", "cz", "gr", "hu",
+        "ie", "nz", "pt", "ro", "sg", "tr", "ua", "za", "kr", "co", "tv", "fm",
     ];
     KNOWN.contains(&raw)
 }
@@ -298,8 +298,7 @@ pub fn mentions(text: &str) -> Vec<String> {
         let inside_word = mark > 0 && bytes[mark - 1].is_ascii_alphanumeric();
         if !inside_word && end > start {
             let handle = text[start..end].to_ascii_lowercase();
-            if handle.chars().next().is_some_and(char::is_alphabetic) && !out.contains(&handle)
-            {
+            if handle.chars().next().is_some_and(char::is_alphabetic) && !out.contains(&handle) {
                 out.push(handle);
             }
         }
@@ -495,10 +494,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_post_with_fifty_links_is_capped() {
-        let text = (0..50)
-            .map(|i| format!("https://example.com/{i}"))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let text =
+            (0..50).map(|i| format!("https://example.com/{i}")).collect::<Vec<_>>().join(" ");
         let mut b = one(&text);
         Entities::new().with_max_links(10).enrich(&mut b).await.unwrap();
         assert_eq!(b.links.len(), 10);
@@ -533,7 +530,11 @@ mod tests {
     async fn a_url_is_not_also_read_as_a_bare_domain() {
         let mut b = one("see https://news.ycombinator.com/item?id=1 for the thread");
         Entities::new().enrich(&mut b).await.unwrap();
-        assert_eq!(b.links.len(), 1, "{:?}", b.links.iter().map(|l| l.resolved.as_str()).collect::<Vec<_>>());
+        assert_eq!(
+            b.links.len(),
+            1,
+            "{:?}",
+            b.links.iter().map(|l| l.resolved.as_str()).collect::<Vec<_>>()
+        );
     }
 }
-

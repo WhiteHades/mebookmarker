@@ -11,9 +11,9 @@
 //!   all to a plain http client.
 
 use crate::http::{Http, Request};
+use mbm_core::Result as CoreResult;
 use mbm_core::bookmark::BlockedReason;
 use mbm_core::error::{Error, Result};
-use mbm_core::Result as CoreResult;
 use serde::Deserialize;
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -190,10 +190,7 @@ pub async fn oembed(http: &Http, url: &str) -> CoreResult<Embed> {
 
     let endpoint = oembed_endpoint(url)
         .ok_or_else(|| Error::NotFound(format!("no oembed provider for {url}")))?;
-    let target = format!(
-        "{endpoint}?format=json&url={}",
-        percent_encode(url)
-    );
+    let target = format!("{endpoint}?format=json&url={}", percent_encode(url));
 
     let response = http.send_once(&Request::get(target).timeout(Duration::from_secs(8))).await?;
     if !response.is_success() {
@@ -405,9 +402,15 @@ mod tests {
 
     #[test]
     fn oembed_endpoints_are_matched_by_host() {
-        assert_eq!(oembed_endpoint("https://www.youtube.com/watch?v=x"), Some("https://www.youtube.com/oembed"));
+        assert_eq!(
+            oembed_endpoint("https://www.youtube.com/watch?v=x"),
+            Some("https://www.youtube.com/oembed")
+        );
         assert_eq!(oembed_endpoint("https://youtu.be/x"), Some("https://www.youtube.com/oembed"));
-        assert_eq!(oembed_endpoint("https://vimeo.com/1"), Some("https://vimeo.com/api/oembed.json"));
+        assert_eq!(
+            oembed_endpoint("https://vimeo.com/1"),
+            Some("https://vimeo.com/api/oembed.json")
+        );
     }
 
     #[test]
@@ -437,7 +440,9 @@ mod tests {
 
     #[test]
     fn an_empty_shell_is_detected_as_needing_rendering() {
-        assert!(needs_rendering(r#"<html><body><div id="root"></div><script src="/a.js"></script></body></html>"#));
+        assert!(needs_rendering(
+            r#"<html><body><div id="root"></div><script src="/a.js"></script></body></html>"#
+        ));
         assert!(needs_rendering("<html><body><div id='root'></div></body></html>"));
     }
 

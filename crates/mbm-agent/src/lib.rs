@@ -70,16 +70,12 @@ impl Agent {
     /// file and a typo there should say what to type instead.
     pub fn parse(raw: &str) -> Result<Self> {
         let wanted = raw.trim().to_ascii_lowercase();
-        Self::ALL
-            .iter()
-            .copied()
-            .find(|agent| agent.name() == wanted)
-            .ok_or_else(|| {
-                Error::Config(format!(
-                    "unknown agent `{raw}`: expected one of {}",
-                    Self::ALL.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")
-                ))
-            })
+        Self::ALL.iter().copied().find(|agent| agent.name() == wanted).ok_or_else(|| {
+            Error::Config(format!(
+                "unknown agent `{raw}`: expected one of {}",
+                Self::ALL.iter().map(|a| a.name()).collect::<Vec<_>>().join(", ")
+            ))
+        })
     }
 
     /// whether the binary is on the path.
@@ -116,12 +112,7 @@ impl Driver {
     /// build a driver.
     #[must_use]
     pub fn new(agent: Agent) -> Self {
-        Self {
-            agent,
-            model: None,
-            timeout: Duration::from_secs(180),
-            extra_args: Vec::new(),
-        }
+        Self { agent, model: None, timeout: Duration::from_secs(180), extra_args: Vec::new() }
     }
 
     /// pick the model.
@@ -158,22 +149,26 @@ impl Driver {
     #[must_use]
     pub fn command_line(&self, prompt: &str) -> Vec<String> {
         let mut args: Vec<String> = match self.agent {
-            Agent::Opencode => vec![
-                "run".to_owned(),
-                "--format".to_owned(),
-                "json".to_owned(),
-            ],
+            Agent::Opencode => vec!["run".to_owned(), "--format".to_owned(), "json".to_owned()],
             Agent::Codex => vec!["exec".to_owned()],
             Agent::Claude => {
-                vec!["-p".to_owned(), prompt.to_owned(), "--output-format".to_owned(), "json".to_owned()]
+                vec![
+                    "-p".to_owned(),
+                    prompt.to_owned(),
+                    "--output-format".to_owned(),
+                    "json".to_owned(),
+                ]
             }
         };
         // codex spells it `-m`; the other two spell it `--model`
         if let Some(model) = &self.model {
-            args.push(match self.agent {
-                Agent::Codex => "-m",
-                Agent::Opencode | Agent::Claude => "--model",
-            }.to_owned());
+            args.push(
+                match self.agent {
+                    Agent::Codex => "-m",
+                    Agent::Opencode | Agent::Claude => "--model",
+                }
+                .to_owned(),
+            );
             args.push(model.clone());
         }
         args.extend(self.extra_args.iter().cloned());
@@ -208,15 +203,13 @@ impl Driver {
 
         // the agent inherits the environment so its own login and provider
         // setup still applies
-        let child = command.spawn().map_err(|e| {
-            Error::Agent(format!("cannot run {}: {e}", self.agent.binary()))
-        })?;
+        let child = command
+            .spawn()
+            .map_err(|e| Error::Agent(format!("cannot run {}: {e}", self.agent.binary())))?;
 
         let output = tokio::time::timeout(self.timeout, child.wait_with_output())
             .await
-            .map_err(|_| {
-                Error::Agent(format!("{} did not finish in time", self.agent.binary()))
-            })?
+            .map_err(|_| Error::Agent(format!("{} did not finish in time", self.agent.binary())))?
             .map_err(|e| Error::Agent(format!("{} failed: {e}", self.agent.binary())))?;
 
         if !output.status.success() {
@@ -367,10 +360,14 @@ pub fn describe_prompt(bookmark: &mbm_core::bookmark::Bookmark) -> String {
         "You are labelling one bookmark in a personal archive. Reply with a json object and \
          nothing else: {\"title\": string, \"summary\": string}.\n\n",
     );
-    prompt.push_str("- title: at most 70 characters, naming what the item is, no quotes or \
-                     trailing punctuation\n");
-    prompt.push_str("- summary: at most 200 characters, one sentence, saying what the item is \
-                     for\n\n");
+    prompt.push_str(
+        "- title: at most 70 characters, naming what the item is, no quotes or \
+                     trailing punctuation\n",
+    );
+    prompt.push_str(
+        "- summary: at most 200 characters, one sentence, saying what the item is \
+                     for\n\n",
+    );
     if let Some(url) = &bookmark.url {
         let _ = writeln!(prompt, "url: {}", url.as_str());
     }
@@ -388,12 +385,7 @@ pub fn describe_prompt(bookmark: &mbm_core::bookmark::Bookmark) -> String {
 /// the prompt the vision stage sends for a described image.
 #[must_use]
 pub fn describe_media_prompt(bookmark: &mbm_core::bookmark::Bookmark) -> String {
-    let media = bookmark
-        .media
-        .iter()
-        .map(|m| m.url.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let media = bookmark.media.iter().map(|m| m.url.as_str()).collect::<Vec<_>>().join("\n");
     format!(
         "Describe each image in this bookmark in one sentence each, plainly, saying what is \
          actually in the picture. Reply with a json object and nothing else: \
@@ -419,11 +411,7 @@ pub fn state_dir(agent: Agent) -> PathBuf {
 /// the agents that are installed, for a status line.
 #[must_use]
 pub fn installed() -> Vec<Agent> {
-    Agent::ALL
-        .iter()
-        .copied()
-        .filter(|a| a.is_installed())
-        .collect()
+    Agent::ALL.iter().copied().filter(|a| a.is_installed()).collect()
 }
 
 /// the first installed agent, or `None`.
@@ -432,10 +420,7 @@ pub fn installed() -> Vec<Agent> {
 /// path needs no configuration at all.
 #[must_use]
 pub fn default_agent() -> Option<Agent> {
-    Agent::ALL
-        .iter()
-        .copied()
-        .find(|a| a.is_installed())
+    Agent::ALL.iter().copied().find(|a| a.is_installed())
 }
 
 /// write a prompt to a temporary file, for an agent that reads a file rather
@@ -544,7 +529,8 @@ mod tests {
 
     #[test]
     fn a_claude_result_is_read_from_its_envelope() {
-        let body = r#"{"type":"result","subtype":"success","result":"the answer","total_cost_usd":0.01}"#;
+        let body =
+            r#"{"type":"result","subtype":"success","result":"the answer","total_cost_usd":0.01}"#;
         assert_eq!(parse_reply(Agent::Claude, body.as_bytes()), "the answer");
     }
 

@@ -113,12 +113,13 @@ impl Entities {
     pub fn to_context_line(&self) -> String {
         let mut parts = Vec::new();
         if !self.hashtags.is_empty() {
-            parts.push(format!("#{}", self.hashtags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" #")));
+            parts.push(format!(
+                "#{}",
+                self.hashtags.iter().map(|t| format!("#{t}")).collect::<Vec<_>>().join(" #")
+            ));
         }
         if !self.mentions.is_empty() {
-            parts.push(
-                self.mentions.iter().map(|m| format!("@{m}")).collect::<Vec<_>>().join(" "),
-            );
+            parts.push(self.mentions.iter().map(|m| format!("@{m}")).collect::<Vec<_>>().join(" "));
         }
         if !self.tools.is_empty() {
             parts.push(self.tools.iter().cloned().collect::<Vec<_>>().join(", "));

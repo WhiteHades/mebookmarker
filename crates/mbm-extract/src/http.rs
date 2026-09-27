@@ -9,8 +9,8 @@
 //! and the second wave is rate limited too.
 
 use mbm_core::error::{Error, Result};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// what to send with a request.
@@ -130,8 +130,7 @@ impl Response {
 
     /// the body as json.
     pub fn json(&self) -> Result<serde_json::Value> {
-        serde_json::from_slice(&self.body)
-            .map_err(|e| Error::Http(format!("{}: {e}", self.url)))
+        serde_json::from_slice(&self.body).map_err(|e| Error::Http(format!("{}: {e}", self.url)))
     }
 
     /// the body as some typed shape.
@@ -140,8 +139,7 @@ impl Response {
     /// the target type's own `Deserialize`, and a generic wrapper cannot get at
     /// it from a `serde_json::Value`.
     pub fn decode<T: serde::de::DeserializeOwned>(&self) -> Result<T> {
-        serde_json::from_slice(&self.body)
-            .map_err(|e| Error::Http(format!("{}: {e}", self.url)))
+        serde_json::from_slice(&self.body).map_err(|e| Error::Http(format!("{}: {e}", self.url)))
     }
 }
 
@@ -408,12 +406,8 @@ mod tests {
 
     #[test]
     fn success_is_the_2xx_range() {
-        let make = |status| Response {
-            status,
-            url: "u".into(),
-            headers: Vec::new(),
-            body: Vec::new(),
-        };
+        let make =
+            |status| Response { status, url: "u".into(), headers: Vec::new(), body: Vec::new() };
         assert!(make(200).is_success());
         assert!(make(204).is_success());
         assert!(!make(301).is_success());
@@ -513,7 +507,9 @@ mod tests {
     async fn a_transport_failure_on_an_unroutable_host_is_reported() {
         let http = Http::new("test", 1).unwrap();
         let err = http
-            .send_once(&Request::get("http://127.0.0.1:1/nothing").timeout(Duration::from_millis(500)))
+            .send_once(
+                &Request::get("http://127.0.0.1:1/nothing").timeout(Duration::from_millis(500)),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, Error::Http(_) | Error::Timeout(_)), "got {err:?}");

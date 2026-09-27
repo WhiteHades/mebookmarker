@@ -42,9 +42,7 @@ pub fn key(a: u8, b: u8) -> Option<u16> {
 /// every bigram in a string, lowercase, in order.
 pub fn bigrams(text: &str) -> impl Iterator<Item = u16> + '_ {
     let bytes = text.as_bytes();
-    bytes
-        .windows(2)
-        .filter_map(|w| key(w[0], w[1]))
+    bytes.windows(2).filter_map(|w| key(w[0], w[1]))
 }
 
 /// a bitset over documents, one column per bigram.
@@ -326,7 +324,11 @@ mod tests {
         }
         let per_column = words_for(docs) * 8;
         assert!(index.size_bytes() <= MAX_COLUMNS * per_column);
-        assert!(index.column_count() < 200, "real prose uses few bigrams, got {}", index.column_count());
+        assert!(
+            index.column_count() < 200,
+            "real prose uses few bigrams, got {}",
+            index.column_count()
+        );
     }
 
     #[test]
@@ -343,7 +345,8 @@ mod tests {
         index.insert(0, "alpha beta");
         index.insert(1, "beta gamma");
         index.insert(2, "gamma delta");
-        let union: std::collections::HashSet<u32> = index.candidates("beta gamma").into_iter().collect();
+        let union: std::collections::HashSet<u32> =
+            index.candidates("beta gamma").into_iter().collect();
         assert_eq!(union, [0, 1, 2].into_iter().collect());
         assert_eq!(index.candidates_all("beta gamma"), vec![1]);
     }

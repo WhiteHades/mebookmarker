@@ -117,21 +117,13 @@ impl Opml {
     /// write to a path, under a document title.
     #[must_use]
     pub fn new(path: impl Into<PathBuf>, title: impl Into<String>) -> Self {
-        Self {
-            path: path.into(),
-            items: Mutex::new(Vec::new()),
-            title: title.into(),
-        }
+        Self { path: path.into(), items: Mutex::new(Vec::new()), title: title.into() }
     }
 }
 
 impl Clone for Opml {
     fn clone(&self) -> Self {
-        Self {
-            path: self.path.clone(),
-            items: Mutex::new(Vec::new()),
-            title: self.title.clone(),
-        }
+        Self { path: self.path.clone(), items: Mutex::new(Vec::new()), title: self.title.clone() }
     }
 }
 
@@ -154,10 +146,9 @@ impl Sink for Opml {
 
     async fn finish(&self) -> Result<SinkReport> {
         let items = {
-            let mut buffer = self
-                .items
-                .lock()
-                .map_err(|_| mbm_core::Error::Sink("the opml sink's buffer is poisoned".to_owned()))?;
+            let mut buffer = self.items.lock().map_err(|_| {
+                mbm_core::Error::Sink("the opml sink's buffer is poisoned".to_owned())
+            })?;
             std::mem::take(&mut *buffer)
         };
         let count = items.len();
@@ -177,9 +168,12 @@ mod tests {
 
     fn one(text: &str) -> Bookmark {
         let url = Url::parse("https://x.com/a/status/1").unwrap();
-        let mut b =
-            Bookmark::new(SourceRef::new(SourceMedium::X, "1", Some(url.clone())), text, 1_767_400_000_000)
-                .created_at(1_767_312_000_000);
+        let mut b = Bookmark::new(
+            SourceRef::new(SourceMedium::X, "1", Some(url.clone())),
+            text,
+            1_767_400_000_000,
+        )
+        .created_at(1_767_312_000_000);
         b.url = Some(url);
         b
     }

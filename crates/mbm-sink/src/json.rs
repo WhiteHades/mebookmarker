@@ -95,11 +95,9 @@ impl From<&Bookmark> for Record {
             title: Some(display_title(b)),
             text: b.text.clone(),
             url: b.url.as_ref().map(ToString::to_string),
-            author: b.author.as_ref().map(|a| {
-                match &a.name {
-                    Some(name) => format!("{} ({name})", a.handle),
-                    None => a.handle.clone(),
-                }
+            author: b.author.as_ref().map(|a| match &a.name {
+                Some(name) => format!("{} ({name})", a.handle),
+                None => a.handle.clone(),
             }),
             created_at: b.created_at,
             ingested_at: b.ingested_at,
@@ -267,9 +265,10 @@ impl Sink for Json {
     }
 
     async fn write(&self, items: &[&Bookmark]) -> Result<SinkReport> {
-        let mut buffer = self.items.lock().map_err(|_| {
-            mbm_core::Error::Sink("the json sink's buffer is poisoned".to_owned())
-        })?;
+        let mut buffer = self
+            .items
+            .lock()
+            .map_err(|_| mbm_core::Error::Sink("the json sink's buffer is poisoned".to_owned()))?;
         buffer.extend(items.iter().map(|b| Record::from(*b)));
         Ok(SinkReport::default())
     }
@@ -298,8 +297,12 @@ mod tests {
 
     fn one(text: &str) -> Bookmark {
         let url = Url::parse("https://x.com/a/status/1").unwrap();
-        let mut b = Bookmark::new(SourceRef::new(SourceMedium::X, "1", Some(url.clone())), text, 1_767_400_000_000)
-            .created_at(1_767_312_000_000);
+        let mut b = Bookmark::new(
+            SourceRef::new(SourceMedium::X, "1", Some(url.clone())),
+            text,
+            1_767_400_000_000,
+        )
+        .created_at(1_767_312_000_000);
         b.url = Some(url);
         b
     }

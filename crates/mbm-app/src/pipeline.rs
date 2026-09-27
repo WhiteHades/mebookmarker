@@ -239,10 +239,10 @@ pub fn build_sources(config: &Config) -> Result<Vec<Arc<dyn Source>>> {
                 }
                 Arc::new(source) as Arc<dyn Source>
             }
-            SourceMedium::Github => Arc::new(mbm_ingest::GithubStars::new(
-                http.clone(),
-                config.github.token(),
-            )) as Arc<dyn Source>,
+            SourceMedium::Github => {
+                Arc::new(mbm_ingest::GithubStars::new(http.clone(), config.github.token()))
+                    as Arc<dyn Source>
+            }
             SourceMedium::Rss => {
                 let urls = entry.list("urls");
                 if urls.is_empty() {
@@ -299,14 +299,10 @@ pub fn build_sinks(config: &Config) -> Result<Vec<Arc<dyn Sink>>> {
 /// the enrichment plan a config describes.
 #[must_use]
 pub fn build_plan(config: &Config, job: &Job) -> Plan {
-    let mut plan = Plan::full(
-        config.jev_key(),
-        config.tag_vocabulary.clone(),
-        &config.taxonomy,
-    )
-    .unwrap_or_default()
-    .with_page(config.enrich.page)
-    .with_limit(job.stage_limit);
+    let mut plan = Plan::full(config.jev_key(), config.tag_vocabulary.clone(), &config.taxonomy)
+        .unwrap_or_default()
+        .with_page(config.enrich.page)
+        .with_limit(job.stage_limit);
 
     let enrich = &config.enrich;
     if !enrich.entities {
@@ -402,10 +398,7 @@ fn store_many(repo: &Repo<'_>, items: &[Bookmark]) -> Result<(usize, usize)> {
     }
     let mut duplicates = 0usize;
     for item in items {
-        if repo
-            .find_id(item.source.medium, &item.source.external_id)?
-            .is_some()
-        {
+        if repo.find_id(item.source.medium, &item.source.external_id)?.is_some() {
             duplicates += 1;
         }
     }
@@ -414,7 +407,11 @@ fn store_many(repo: &Repo<'_>, items: &[Bookmark]) -> Result<(usize, usize)> {
 }
 
 /// run the enrichment stages.
-pub async fn enrich(conn: &Connection, config: &Config, job: &Job) -> Result<Vec<(EnrichStage, mbm_enrich::StageReport)>> {
+pub async fn enrich(
+    conn: &Connection,
+    config: &Config,
+    job: &Job,
+) -> Result<Vec<(EnrichStage, mbm_enrich::StageReport)>> {
     if job.skip_enrich {
         return Ok(Vec::new());
     }
@@ -424,7 +421,10 @@ pub async fn enrich(conn: &Connection, config: &Config, job: &Job) -> Result<Vec
 }
 
 /// write the store to every sink.
-pub async fn export(conn: &Connection, job: &Job) -> Result<Vec<(String, mbm_core::port::SinkReport)>> {
+pub async fn export(
+    conn: &Connection,
+    job: &Job,
+) -> Result<Vec<(String, mbm_core::port::SinkReport)>> {
     let mut out = Vec::with_capacity(job.sinks.len());
     let repo = Repo::new(conn);
 
@@ -498,8 +498,7 @@ pub fn search(
         return repo.list(limit, offset);
     }
     let hits = Searcher::new(conn).search(query, Mode::Hybrid, limit.saturating_add(offset))?;
-    let ids: Vec<mbm_core::id::Id> =
-        hits.into_iter().skip(offset).map(|h| h.id).collect();
+    let ids: Vec<mbm_core::id::Id> = hits.into_iter().skip(offset).map(|h| h.id).collect();
     repo.load_ranked(&ids)
 }
 
@@ -512,11 +511,7 @@ pub fn search_mode(
 ) -> Result<Vec<(Bookmark, f64)>> {
     let repo = Repo::new(conn);
     if query.trim().is_empty() {
-        return Ok(repo
-            .list(limit, 0)?
-            .into_iter()
-            .map(|b| (b, 0.0))
-            .collect());
+        return Ok(repo.list(limit, 0)?.into_iter().map(|b| (b, 0.0)).collect());
     }
     let hits = Searcher::new(conn).search(query, mode, limit)?;
     let ids: Vec<mbm_core::id::Id> = hits.iter().map(|h| h.id).collect();
@@ -533,7 +528,12 @@ pub fn search_mode(
 }
 
 /// a filtered listing, for the tui.
-pub fn list(conn: &Connection, filter: &Filter, limit: usize, offset: usize) -> Result<Vec<Bookmark>> {
+pub fn list(
+    conn: &Connection,
+    filter: &Filter,
+    limit: usize,
+    offset: usize,
+) -> Result<Vec<Bookmark>> {
     Repo::new(conn).query(filter, limit, offset)
 }
 
@@ -567,10 +567,7 @@ mod tests {
             SourceMedium::Rss
         }
 
-        async fn fetch(
-            &self,
-            _request: &FetchRequest,
-        ) -> Result<mbm_core::port::FetchPage> {
+        async fn fetch(&self, _request: &FetchRequest) -> Result<mbm_core::port::FetchPage> {
             Ok(mbm_core::port::FetchPage::empty())
         }
     }
@@ -671,11 +668,8 @@ mod tests {
     fn a_configured_sink_becomes_the_right_object() {
         let mut config = Config::default();
         config.data_dir = PathBuf::from("/tmp/mbm-test");
-        config.sinks = vec![Sink {
-            kind: SinkMedium::Html,
-            enabled: true,
-            path: PathBuf::from("site.html"),
-        }];
+        config.sinks =
+            vec![Sink { kind: SinkMedium::Html, enabled: true, path: PathBuf::from("site.html") }];
         let job = Job::full(&config, &Connection::open_in_memory().unwrap()).unwrap();
         assert_eq!(job.sinks[0].name(), "html");
     }
@@ -683,11 +677,8 @@ mod tests {
     #[test]
     fn a_disabled_sink_is_not_built() {
         let mut config = Config::default();
-        config.sinks = vec![Sink {
-            kind: SinkMedium::Html,
-            enabled: false,
-            path: PathBuf::from("site.html"),
-        }];
+        config.sinks =
+            vec![Sink { kind: SinkMedium::Html, enabled: false, path: PathBuf::from("site.html") }];
         let job = Job::full(&config, &Connection::open_in_memory().unwrap()).unwrap();
         assert_eq!(job.sinks.len(), 1, "the fallback jsonl");
     }

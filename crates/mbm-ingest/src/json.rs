@@ -110,13 +110,10 @@ fn one(item: &Value, medium: SourceMedium, shape: Shape) -> Result<Option<Bookma
     let created = created_at(object, shape);
     let ingested = created.unwrap_or_else(now_millis);
     let handle = author_handle(object, shape);
-    let author = handle
-        .as_deref()
-        .map(Author::new)
-        .map(|a| match author_name(object, shape) {
-            Some(name) => a.with_name(name),
-            None => a,
-        });
+    let author = handle.as_deref().map(Author::new).map(|a| match author_name(object, shape) {
+        Some(name) => a.with_name(name),
+        None => a,
+    });
 
     let url = permalink(object, shape, &external_id);
     let collection = string(object, &["collection", "folder", "list", "feed"]);
@@ -319,9 +316,8 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 }
 
 fn parse_twitter_date(raw: &str) -> Option<i64> {
-    const MONTHS: [&str; 12] = [
-        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
-    ];
+    const MONTHS: [&str; 12] =
+        ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
     let parts: Vec<&str> = raw.split_whitespace().collect();
     if parts.len() < 5 {
         return None;
@@ -409,9 +405,8 @@ fn media(object: &serde_json::Map<String, Value>, _shape: Shape) -> Vec<Media> {
             if let Some(url) = item.as_str() {
                 push_media(&mut out, url, None, None);
             } else if let Some(map) = item.as_object() {
-                let url = first_string(map, &["url", "media_url_https", "src"]).or_else(|| {
-                    first_string(map, &["mediaUrl", "media_url", "previewUrl"])
-                });
+                let url = first_string(map, &["url", "media_url_https", "src"])
+                    .or_else(|| first_string(map, &["mediaUrl", "media_url", "previewUrl"]));
                 let Some(url) = url else { continue };
                 let kind = map
                     .get("type")
@@ -714,7 +709,8 @@ mod tests {
 
     #[test]
     fn a_record_with_no_id_is_skipped_and_counted() {
-        let (items, skipped) = parse_str(r#"[{"text":"no id"},{"id":"1","text":"ok"}]"#, SourceMedium::Json).unwrap();
+        let (items, skipped) =
+            parse_str(r#"[{"text":"no id"},{"id":"1","text":"ok"}]"#, SourceMedium::Json).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(skipped, 1);
     }
@@ -786,7 +782,8 @@ mod tests {
 
     #[test]
     fn a_wrapper_object_under_an_unexpected_key_still_finds_its_records() {
-        let (items, _) = parse_str(r#"{"somethingElse":[{"id":"1","text":"x"}]}"#, SourceMedium::Json).unwrap();
+        let (items, _) =
+            parse_str(r#"{"somethingElse":[{"id":"1","text":"x"}]}"#, SourceMedium::Json).unwrap();
         assert_eq!(items.len(), 1);
     }
 }

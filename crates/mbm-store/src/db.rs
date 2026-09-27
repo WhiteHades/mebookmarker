@@ -18,8 +18,7 @@ pub fn open(path: &Path, create: bool) -> Result<Connection> {
         && !parent.as_os_str().is_empty()
         && !parent.exists()
     {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| Error::io(parent, e))?;
+        std::fs::create_dir_all(parent).map_err(|e| Error::io(parent, e))?;
     }
 
     let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -47,9 +46,8 @@ pub fn open_in_memory() -> Result<Connection> {
 fn tune(conn: &Connection) -> Result<()> {
     let _ = conn.execute_batch("PRAGMA page_size = 4096;");
 
-    let _: String = conn
-        .query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0))
-        .map_err(|e| store_err(&e))?;
+    let _: String =
+        conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0)).map_err(|e| store_err(&e))?;
 
     conn.execute_batch(&format!(
         "PRAGMA synchronous = NORMAL;
@@ -73,7 +71,10 @@ pub fn for_reading(conn: &Connection) -> Result<()> {
 // immediate acquires the write lock at the start, so two concurrent pipelines
 // queue here instead of each finishing a long read pass and then colliding on
 // the upgrade.
-pub fn in_transaction<T>(conn: &mut Connection, body: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+pub fn in_transaction<T>(
+    conn: &mut Connection,
+    body: impl FnOnce(&Connection) -> Result<T>,
+) -> Result<T> {
     let tx = conn
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(|e| store_err(&e))?;
@@ -182,9 +183,8 @@ mod tests {
         .unwrap();
         conn.execute("INSERT INTO s(a) VALUES('running rapidly')", []).unwrap();
 
-        let hits: i64 = conn
-            .query_row("SELECT count(*) FROM s WHERE s MATCH 'run'", [], |r| r.get(0))
-            .unwrap();
+        let hits: i64 =
+            conn.query_row("SELECT count(*) FROM s WHERE s MATCH 'run'", [], |r| r.get(0)).unwrap();
         assert_eq!(hits, 1);
     }
 
@@ -205,12 +205,9 @@ mod tests {
     fn batching_commits_everything_exactly_once() {
         let mut conn = open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE t(x INTEGER PRIMARY KEY)").unwrap();
-        let written = in_batches(
-            &mut conn,
-            7,
-            0..25,
-            |tx, i| tx.execute("INSERT INTO t VALUES (?1)", [i]).sql().map(|_| ()),
-        )
+        let written = in_batches(&mut conn, 7, 0..25, |tx, i| {
+            tx.execute("INSERT INTO t VALUES (?1)", [i]).sql().map(|_| ())
+        })
         .unwrap();
         assert_eq!(written, 25);
         let n: i64 = conn.query_row("SELECT count(*) FROM t", [], |r| r.get(0)).unwrap();
@@ -221,7 +218,9 @@ mod tests {
     fn batching_an_empty_iterator_is_a_no_op() {
         let mut conn = open_in_memory().unwrap();
         conn.execute_batch("CREATE TABLE t(x INTEGER)").unwrap();
-        let written = in_batches(&mut conn, 10, 0..0, |tx, i: i32| tx.execute("INSERT INTO t VALUES (?1)", [i]).sql().map(|_| ()))
+        let written = in_batches(&mut conn, 10, 0..0, |tx, i: i32| {
+            tx.execute("INSERT INTO t VALUES (?1)", [i]).sql().map(|_| ())
+        })
         .unwrap();
         assert_eq!(written, 0);
     }

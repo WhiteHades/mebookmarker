@@ -54,9 +54,7 @@ impl EvaluateRequest {
             return Err(Error::Invalid("a request needs at least one question".to_owned()));
         }
         for (name, question) in &self.questions {
-            question
-                .validate()
-                .map_err(|e| Error::Invalid(format!("question `{name}`: {e}")))?;
+            question.validate().map_err(|e| Error::Invalid(format!("question `{name}`: {e}")))?;
         }
         Ok(())
     }
@@ -147,13 +145,7 @@ impl EvaluateResponse {
     /// the model's own confidence in a choice or score answer.
     #[must_use]
     pub fn confidence(&self, name: &str) -> Option<f64> {
-        self.provider_metadata
-            .as_ref()?
-            .typesafe
-            .as_ref()?
-            .confidence
-            .get(name)
-            .copied()
+        self.provider_metadata.as_ref()?.typesafe.as_ref()?.confidence.get(name).copied()
     }
 
     /// the cost the gateway reported, in dollars.
@@ -279,9 +271,11 @@ impl<'de> Deserialize<'de> for Dollars {
         }
         match Repr::deserialize(deserializer)? {
             Repr::Number(n) => Ok(Self(n)),
-            Repr::Text(s) => {
-                s.trim().parse().map(Self).map_err(|_| serde::de::Error::custom(format!("`{s}` is not a dollar amount")))
-            }
+            Repr::Text(s) => s
+                .trim()
+                .parse()
+                .map(Self)
+                .map_err(|_| serde::de::Error::custom(format!("`{s}` is not a dollar amount"))),
         }
     }
 }
@@ -398,7 +392,12 @@ impl Jev {
     }
 
     /// ask one question and return its answer.
-    pub async fn ask(&self, state: &serde_json::Value, name: &str, question: Question) -> Result<Answer> {
+    pub async fn ask(
+        &self,
+        state: &serde_json::Value,
+        name: &str,
+        question: Question,
+    ) -> Result<Answer> {
         let mut questions = BTreeMap::new();
         questions.insert(name.to_owned(), question);
         let mut response = self.evaluate(&EvaluateRequest::new(state.clone(), questions)).await?;
@@ -437,7 +436,9 @@ fn classify(status: u16, body: &str) -> Error {
     };
     match status {
         401 | 403 => Error::Auth(format!("the gateway rejected the key (status {status}){detail}")),
-        400 | 404 | 422 => Error::Invalid(format!("the gateway rejected the request ({status}){detail}")),
+        400 | 404 | 422 => {
+            Error::Invalid(format!("the gateway rejected the request ({status}){detail}"))
+        }
         429 => Error::RateLimited(format!("the gateway rate limited us{detail}")),
         other => Error::Jev(format!("the gateway returned {other}{detail}")),
     }
@@ -652,8 +653,10 @@ mod tests {
                 }
                 line.clear();
             }
-            let response =
-                format!("HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
+            let response = format!(
+                "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
             let _ = stream.write_all(response.as_bytes());
         });
         TinyServer { url, handle: Some(handle) }

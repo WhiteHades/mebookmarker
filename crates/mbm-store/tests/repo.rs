@@ -5,9 +5,9 @@
 //! trigger ordering, partial-index selection, and keyset pagination.
 
 use ahash::AHashSet;
+use mbm_core::bookmark::ThreadRole;
 use mbm_core::bookmark::{Assigner, Bookmark, CategoryAssignment, Link, MediaKind};
 use mbm_core::category::{Action, Category, CategoryRule, Taxonomy};
-use mbm_core::bookmark::ThreadRole;
 use mbm_core::medium::{LinkKind, SourceMedium};
 use mbm_core::{Author, Id, SourceRef};
 use rusqlite::Connection;
@@ -132,7 +132,10 @@ fn the_identity_index_covers_different_media_separately() {
     repo.insert(&a).unwrap();
     a.id = Id::now();
     a.source.medium = SourceMedium::Reddit;
-    assert!(repo.insert(&a).is_ok(), "the same external id from another medium is a different item");
+    assert!(
+        repo.insert(&a).is_ok(),
+        "the same external id from another medium is a different item"
+    );
 }
 
 #[test]
@@ -223,8 +226,7 @@ fn tags_are_replaced_wholesale() {
     let repo = Repo::new(&conn);
     let a = sample("1");
     repo.insert(&a).unwrap();
-    repo.set_tags(a.id, &AHashSet::from(["one".to_owned(), "two".to_owned()]))
-        .unwrap();
+    repo.set_tags(a.id, &AHashSet::from(["one".to_owned(), "two".to_owned()])).unwrap();
     let tags = repo.tags_with_counts(10).unwrap();
     assert_eq!(tags.len(), 2);
     repo.set_tags(a.id, &AHashSet::from(["three".to_owned()])).unwrap();
@@ -261,7 +263,11 @@ fn categories_sync_and_assign() {
         a.id,
         &[
             CategoryAssignment { slug: "tool".into(), confidence: 0.9, assigned_by: Assigner::Jev },
-            CategoryAssignment { slug: "general".into(), confidence: 0.4, assigned_by: Assigner::Rule },
+            CategoryAssignment {
+                slug: "general".into(),
+                confidence: 0.4,
+                assigned_by: Assigner::Rule,
+            },
         ],
         &ids,
     )
@@ -502,7 +508,11 @@ fn a_whole_aggregate_survives_insert_and_reload_with_categories() {
     repo.insert(&a).unwrap();
     repo.set_categories(
         a.id,
-        &[CategoryAssignment { slug: "tool".into(), confidence: 0.95, assigned_by: Assigner::Rule }],
+        &[CategoryAssignment {
+            slug: "tool".into(),
+            confidence: 0.95,
+            assigned_by: Assigner::Rule,
+        }],
         &ids,
     )
     .unwrap();
@@ -530,7 +540,11 @@ fn the_assigner_label_round_trips_through_the_database() {
     )
     .unwrap();
     let stored: String = conn
-        .query_row("SELECT assigned_by FROM bookmark_category WHERE bookmark = ?1", [a.id.get() as i64], |r| r.get(0))
+        .query_row(
+            "SELECT assigned_by FROM bookmark_category WHERE bookmark = ?1",
+            [a.id.get() as i64],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(stored, "jev", "serde writes the kebab-case variant name");
     assert_eq!(repo.load(a.id).unwrap().unwrap().categories[0].assigned_by, Assigner::Jev);

@@ -168,11 +168,9 @@ pub fn article(bookmark: &Bookmark) -> String {
         .or_else(|| bookmark.links.first().map(|l| l.resolved.to_string()));
 
     let heading = match &url {
-        Some(u) => format!(
-            "<a class=\"title\" href=\"{}\">{}</a>",
-            escape_html(u),
-            escape_html(&title)
-        ),
+        Some(u) => {
+            format!("<a class=\"title\" href=\"{}\">{}</a>", escape_html(u), escape_html(&title))
+        }
         None => format!("<span class=\"title\">{}</span>", escape_html(&title)),
     };
 
@@ -255,9 +253,9 @@ pub fn list(items: &[&Bookmark]) -> String {
     let mut out = String::new();
     for day in days {
         let _ = writeln!(out, "<h2>{}</h2>", date_only(day * 86_400_000));
-        for item in items.iter().filter(|b| {
-            b.created_at.unwrap_or(b.ingested_at) / 86_400_000 == day
-        }) {
+        for item in
+            items.iter().filter(|b| b.created_at.unwrap_or(b.ingested_at) / 86_400_000 == day)
+        {
             out.push_str(&article(item));
         }
     }
@@ -268,10 +266,8 @@ pub fn list(items: &[&Bookmark]) -> String {
 #[must_use]
 pub fn document(items: &[&Bookmark]) -> String {
     let count = items.len();
-    let mut days: Vec<i64> = items
-        .iter()
-        .map(|b| b.created_at.unwrap_or(b.ingested_at) / 86_400_000)
-        .collect();
+    let mut days: Vec<i64> =
+        items.iter().map(|b| b.created_at.unwrap_or(b.ingested_at) / 86_400_000).collect();
     days.sort_unstable();
     let first = days.first().map(|d| date_only(d * 86_400_000));
     let last = days.last().map(|d| date_only(d * 86_400_000));
@@ -316,10 +312,9 @@ impl Sink for Html {
 
     async fn finish(&self) -> Result<SinkReport> {
         let items = {
-            let mut buffer = self
-                .items
-                .lock()
-                .map_err(|_| mbm_core::Error::Sink("the html sink's buffer is poisoned".to_owned()))?;
+            let mut buffer = self.items.lock().map_err(|_| {
+                mbm_core::Error::Sink("the html sink's buffer is poisoned".to_owned())
+            })?;
             std::mem::take(&mut *buffer)
         };
         let count = items.len();
@@ -338,8 +333,12 @@ mod tests {
 
     fn one(text: &str) -> Bookmark {
         let url = Url::parse("https://x.com/a/status/1").unwrap();
-        let mut b = Bookmark::new(SourceRef::new(SourceMedium::X, "1", Some(url.clone())), text, 1_767_400_000_000)
-            .created_at(1_767_312_000_000);
+        let mut b = Bookmark::new(
+            SourceRef::new(SourceMedium::X, "1", Some(url.clone())),
+            text,
+            1_767_400_000_000,
+        )
+        .created_at(1_767_312_000_000);
         b.url = Some(url);
         b
     }

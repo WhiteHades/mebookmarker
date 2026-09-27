@@ -9,16 +9,19 @@
 //! runs cannot both decide an item is new.
 
 use ahash::{AHashMap, AHashSet};
-use std::collections::BTreeSet;
-use mbm_core::bookmark::{Assigner, BlockedReason, Bookmark, CategoryAssignment, Enrichment, Link, Media, MediaKind, ThreadRole};
+use mbm_core::Result;
+use mbm_core::bookmark::{
+    Assigner, BlockedReason, Bookmark, CategoryAssignment, Enrichment, Link, Media, MediaKind,
+    ThreadRole,
+};
 use mbm_core::id::Id;
 use mbm_core::medium::{LinkKind, SourceMedium};
-use mbm_core::Result;
 use rusqlite::{Connection, ToSql, params};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::str::FromStr;
 
-use crate::db::{store_err, SqlResultExt};
+use crate::db::{SqlResultExt, store_err};
 
 /// rows written per transaction during a bulk import.
 const IMPORT_BATCH: usize = 2_000;
@@ -74,12 +77,7 @@ impl<'conn> Repo<'conn> {
     /// keyset pagination on the primary key. `LIMIT`/`OFFSET` would get
     /// slower every page and would skip or repeat rows if the table changed
     /// mid-scan, which a scheduled run makes likely.
-    pub fn pending_ids(
-        &self,
-        column: &str,
-        after: Option<Id>,
-        limit: usize,
-    ) -> Result<Vec<Id>> {
+    pub fn pending_ids(&self, column: &str, after: Option<Id>, limit: usize) -> Result<Vec<Id>> {
         debug_assert!(
             matches!(
                 column,
@@ -88,7 +86,9 @@ impl<'conn> Repo<'conn> {
             "unknown stage column {column}"
         );
         let sql = if after.is_some() {
-            format!("SELECT id FROM bookmark WHERE {column} IS NULL AND id > ?1 ORDER BY id LIMIT ?2")
+            format!(
+                "SELECT id FROM bookmark WHERE {column} IS NULL AND id > ?1 ORDER BY id LIMIT ?2"
+            )
         } else {
             format!("SELECT id FROM bookmark WHERE {column} IS NULL ORDER BY id LIMIT ?2")
         };
@@ -151,7 +151,10 @@ impl<'conn> Repo<'conn> {
     /// same batch with the same identity. that second case is a real one: a
     /// personal archive quotes the same post it bookmarks elsewhere, and a batch
     /// that aborted on the collision would lose every item after it.
-    pub fn insert_many<'a>(&self, bookmarks: impl IntoIterator<Item = &'a Bookmark>) -> Result<usize> {
+    pub fn insert_many<'a>(
+        &self,
+        bookmarks: impl IntoIterator<Item = &'a Bookmark>,
+    ) -> Result<usize> {
         let mut written = 0;
         let mut pending: Vec<&Bookmark> = Vec::with_capacity(IMPORT_BATCH);
         let mut queued: AHashSet<(SourceMedium, String)> = AHashSet::with_capacity(IMPORT_BATCH);
@@ -269,7 +272,8 @@ impl<'conn> Repo<'conn> {
             })
             .sql()?;
         for row in rows {
-            let (kind, url, preview, width, height, duration, alt) = row.map_err(|e| store_err(&e))?;
+            let (kind, url, preview, width, height, duration, alt) =
+                row.map_err(|e| store_err(&e))?;
             let Some(url) = parse_url_opt(&url) else {
                 continue;
             };
@@ -312,13 +316,9 @@ impl<'conn> Repo<'conn> {
 
         // the tags are the one satellite the caller always wants, because a
         // list row shows them and a filter reads them
-        let mut stmt = self
-            .conn
-            .prepare("SELECT tag FROM tag WHERE bookmark = ?1 ORDER BY tag")
-            .sql()?;
-        let rows = stmt
-            .query_map(params![id], |r| r.get::<_, String>(0))
-            .sql()?;
+        let mut stmt =
+            self.conn.prepare("SELECT tag FROM tag WHERE bookmark = ?1 ORDER BY tag").sql()?;
+        let rows = stmt.query_map(params![id], |r| r.get::<_, String>(0)).sql()?;
         for row in rows {
             bookmark.tags.insert(row.map_err(|e| store_err(&e))?);
         }
@@ -335,9 +335,7 @@ impl<'conn> Repo<'conn> {
             ))
             .sql()?;
         let mut out = Vec::with_capacity(limit);
-        let rows = stmt
-            .query_map(params![limit as i64, offset as i64], map_row)
-            .sql()?;
+        let rows = stmt.query_map(params![limit as i64, offset as i64], map_row).sql()?;
         for row in rows {
             out.push(row.map_err(|e| store_err(&e))?);
         }
@@ -414,8 +412,7 @@ impl<'conn> Repo<'conn> {
     /// replace a bookmark's tags.
     pub fn set_tags(&self, id: Id, tags: &AHashSet<String>) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(|e| store_err(&e))?;
-        tx.execute("DELETE FROM tag WHERE bookmark = ?1", params![id.get() as i64])
-            .sql()?;
+        tx.execute("DELETE FROM tag WHERE bookmark = ?1", params![id.get() as i64]).sql()?;
         for tag in tags {
             tx.execute(
                 "INSERT OR IGNORE INTO tag(bookmark, tag) VALUES (?1, ?2)",
@@ -454,7 +451,9 @@ impl<'conn> Repo<'conn> {
             )
             .sql()?;
             let id: i64 = tx
-                .query_row("SELECT id FROM category WHERE slug = ?1", params![category.slug], |r| r.get(0))
+                .query_row("SELECT id FROM category WHERE slug = ?1", params![category.slug], |r| {
+                    r.get(0)
+                })
                 .sql()?;
             out.insert(category.slug.clone(), id);
         }
@@ -498,7 +497,9 @@ impl<'conn> Repo<'conn> {
             .prepare("SELECT tag, count(*) FROM tag GROUP BY tag ORDER BY 2 DESC, 1 LIMIT ?1")
             .sql()?;
         let rows = stmt
-            .query_map(params![limit as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize)))
+            .query_map(params![limit as i64], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
+            })
             .sql()?;
         rows.collect::<rusqlite::Result<Vec<_>>>().sql()
     }
@@ -513,9 +514,7 @@ impl<'conn> Repo<'conn> {
                  WHERE t.tag = ?1 ORDER BY b.created_at DESC LIMIT ?2 OFFSET ?3"
             ))
             .sql()?;
-        let rows = stmt
-            .query_map(params![tag, limit as i64, offset as i64], map_row)
-            .sql()?;
+        let rows = stmt.query_map(params![tag, limit as i64, offset as i64], map_row).sql()?;
         rows.collect::<rusqlite::Result<Vec<_>>>().sql()
     }
 
@@ -525,7 +524,9 @@ impl<'conn> Repo<'conn> {
         let sql = format!("SELECT count(*) FROM bookmark b {where_clause}");
         let mut stmt = self.conn.prepare(&sql).sql()?;
         let refs: Vec<&dyn ToSql> = args.iter().map(AsRef::as_ref).collect();
-        stmt.query_row(rusqlite::params_from_iter(refs), |r| r.get::<_, i64>(0)).sql().map(|n| n as usize)
+        stmt.query_row(rusqlite::params_from_iter(refs), |r| r.get::<_, i64>(0))
+            .sql()
+            .map(|n| n as usize)
     }
 
     /// a page of bookmarks matching a filter.
@@ -720,11 +721,8 @@ fn insert_row(conn: &Connection, bookmark: &Bookmark) -> Result<()> {
     }
 
     for tag in &bookmark.tags {
-        conn.execute(
-            "INSERT OR IGNORE INTO tag(bookmark, tag) VALUES (?1, ?2)",
-            params![id, tag],
-        )
-        .sql()?;
+        conn.execute("INSERT OR IGNORE INTO tag(bookmark, tag) VALUES (?1, ?2)", params![id, tag])
+            .sql()?;
     }
 
     Ok(())
@@ -758,9 +756,7 @@ fn index_extra(bookmark: &Bookmark) -> String {
 }
 
 fn extra_from_raw(raw: &Value) -> Option<String> {
-    raw.get("summary")
-        .and_then(Value::as_str)
-        .map(str::to_owned)
+    raw.get("summary").and_then(Value::as_str).map(str::to_owned)
 }
 
 fn parse_url_opt(raw: &str) -> Option<url::Url> {

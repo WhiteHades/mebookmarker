@@ -10,14 +10,13 @@ pub mod search;
 use mbm_core::Result;
 
 pub use repo::{Filter, Repo};
-pub use search::{Hit, Mode, Searcher};
 use rusqlite::Connection;
+pub use search::{Hit, Mode, Searcher};
 
 /// bring the database up to [`schema::SCHEMA_VERSION`].
 pub fn migrate(conn: &Connection) -> Result<()> {
-    let current: i64 = conn
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .map_err(|e| db::store_err(&e))?;
+    let current: i64 =
+        conn.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(|e| db::store_err(&e))?;
     if current >= schema::SCHEMA_VERSION {
         return Ok(());
     }

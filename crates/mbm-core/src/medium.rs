@@ -77,9 +77,19 @@ impl SourceMedium {
     #[must_use]
     pub const fn requires_auth(self) -> bool {
         match self {
-            Self::X | Self::XBird | Self::Reddit | Self::HackerNews | Self::Github
-            | Self::YouTube | Self::ReadLater | Self::Readwise => true,
-            Self::Json | Self::Rss | Self::BrowserBookmarks | Self::LocalFile | Self::Manual
+            Self::X
+            | Self::XBird
+            | Self::Reddit
+            | Self::HackerNews
+            | Self::Github
+            | Self::YouTube
+            | Self::ReadLater
+            | Self::Readwise => true,
+            Self::Json
+            | Self::Rss
+            | Self::BrowserBookmarks
+            | Self::LocalFile
+            | Self::Manual
             | Self::MarkdownFile => false,
         }
     }
@@ -87,10 +97,20 @@ impl SourceMedium {
     #[must_use]
     pub const fn supports_paging(self) -> bool {
         match self {
-            Self::X | Self::XBird | Self::Reddit | Self::HackerNews | Self::Github
-            | Self::ReadLater | Self::Readwise => true,
-            Self::Json | Self::YouTube | Self::Rss | Self::BrowserBookmarks | Self::LocalFile
-            | Self::Manual | Self::MarkdownFile => false,
+            Self::X
+            | Self::XBird
+            | Self::Reddit
+            | Self::HackerNews
+            | Self::Github
+            | Self::ReadLater
+            | Self::Readwise => true,
+            Self::Json
+            | Self::YouTube
+            | Self::Rss
+            | Self::BrowserBookmarks
+            | Self::LocalFile
+            | Self::Manual
+            | Self::MarkdownFile => false,
         }
     }
 }
@@ -261,7 +281,11 @@ impl LinkKind {
             | Self::Paper
             | Self::Product
             | Self::Release => true,
-            Self::Video | Self::Podcast | Self::Post | Self::Image | Self::Thread
+            Self::Video
+            | Self::Podcast
+            | Self::Post
+            | Self::Image
+            | Self::Thread
             | Self::Unknown => false,
         }
     }
@@ -410,7 +434,8 @@ fn jaro_winkler(a: &str, b: &str) -> f64 {
     }
 
     let m = matches as f64;
-    let jaro = (m / a.len() as f64 + m / b.len() as f64 + (m - transpositions as f64 / 2.0) / m) / 3.0;
+    let jaro =
+        (m / a.len() as f64 + m / b.len() as f64 + (m - transpositions as f64 / 2.0) / m) / 3.0;
 
     let prefix = a.iter().zip(&b).take(4).take_while(|(x, y)| x == y).count().min(4);
     jaro + 0.1 * prefix as f64 * (1.0 - jaro)

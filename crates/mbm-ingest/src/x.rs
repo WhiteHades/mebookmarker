@@ -32,7 +32,8 @@ use url::Url;
 const GRAPHQL: &str = "https://x.com/i/api/graphql";
 
 /// the public bearer the web client sends.
-const BEARER: &str = "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAA1qcIY9SjgRzByYKt2%2FwuM2Pm6lNqCi4%2FyGeN5c4vcm9JKI4hlxj";
+const BEARER: &str =
+    "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAA1qcIY9SjgRzByYKt2%2FwuM2Pm6lNqCi4%2FyGeN5c4vcm9JKI4hlxj";
 
 /// the query id for a bookmarks page. these change when x ships a change, and
 /// a stale one comes back as a 404 with an empty body, which
@@ -174,10 +175,13 @@ impl XClient {
 
         let response = self
             .http
-            .send(&Request::get(url).header("authorization", format!("Bearer {BEARER}")).header(
-                "x-twitter-active-user",
-                "yes",
-            ).header("x-twitter-client-language", "en").header("cookie", self.cookies.header_value()))
+            .send(
+                &Request::get(url)
+                    .header("authorization", format!("Bearer {BEARER}"))
+                    .header("x-twitter-active-user", "yes")
+                    .header("x-twitter-client-language", "en")
+                    .header("cookie", self.cookies.header_value()),
+            )
             .await?;
 
         Page::parse(&response.body)
@@ -230,8 +234,8 @@ impl Page {
     /// an empty response is the shape x returns when a query id has gone stale,
     /// so that case is reported as a shape error rather than as an empty page.
     pub fn parse(body: &[u8]) -> Result<Self> {
-        let value: Value = serde_json::from_slice(body)
-            .map_err(|e| Error::Ingest(format!("x: not json: {e}")))?;
+        let value: Value =
+            serde_json::from_slice(body).map_err(|e| Error::Ingest(format!("x: not json: {e}")))?;
 
         let data = value.get("data").ok_or_else(|| {
             Error::Ingest(format!(
@@ -245,8 +249,10 @@ impl Page {
             .and_then(|t| t.get("instructions"))
             .and_then(Value::as_array)
             .ok_or_else(|| {
-                Error::Ingest("x returned no bookmark_timeline_v2. the response shape has changed."
-                    .to_owned())
+                Error::Ingest(
+                    "x returned no bookmark_timeline_v2. the response shape has changed."
+                        .to_owned(),
+                )
             })?;
 
         let mut instructions = Vec::new();
@@ -265,9 +271,8 @@ impl Page {
             }
             if let Some(entries) = entry.get("entries").and_then(Value::as_array) {
                 for candidate in entries {
-                    let has_tweet = candidate
-                        .pointer("/content/itemContent/tweet_results")
-                        .is_some();
+                    let has_tweet =
+                        candidate.pointer("/content/itemContent/tweet_results").is_some();
                     if has_tweet {
                         instructions.push(candidate.clone());
                         requested += 1;
@@ -308,10 +313,7 @@ fn entry(value: &Value) -> Option<Bookmark> {
 
     let id = tweet.get("rest_id")?.as_str()?.to_owned();
     let text = tweet.get("full_text")?.as_str().unwrap_or_default().to_owned();
-    let created = tweet
-        .get("created_at")
-        .and_then(Value::as_str)
-        .and_then(crate::json::parse_date);
+    let created = tweet.get("created_at").and_then(Value::as_str).and_then(crate::json::parse_date);
 
     let user = tweet.get("core")?.get("user_results")?.get("result")?;
     let handle = user.get("screen_name")?.as_str()?.to_owned();
@@ -319,11 +321,7 @@ fn entry(value: &Value) -> Option<Bookmark> {
 
     let url = Url::parse(&format!("https://x.com/{handle}/status/{id}")).ok();
     let source = SourceRef::new(SourceMedium::X, id, url.clone());
-    let mut bookmark = Bookmark::new(
-        source,
-        text,
-        created.unwrap_or_else(crate::net::now),
-    );
+    let mut bookmark = Bookmark::new(source, text, created.unwrap_or_else(crate::net::now));
     bookmark.created_at = created;
     bookmark.url = url;
     bookmark.author = Some(mbm_core::Author::new(&handle).with_name_opt(name));
@@ -371,10 +369,8 @@ fn tweet_media(tweet: &Value) -> Vec<Media> {
             "animated_gif" => MediaKind::Gif,
             _ => MediaKind::Photo,
         };
-        let url = item
-            .get("media_url_https")
-            .and_then(Value::as_str)
-            .and_then(|u| Url::parse(u).ok());
+        let url =
+            item.get("media_url_https").and_then(Value::as_str).and_then(|u| Url::parse(u).ok());
         let Some(url) = url else { continue };
         out.push(Media {
             kind,
@@ -383,8 +379,16 @@ fn tweet_media(tweet: &Value) -> Vec<Media> {
                 .get("preview_url")
                 .and_then(Value::as_str)
                 .and_then(|u| Url::parse(u).ok()),
-            width: item.get("original_info").and_then(|i| i.get("width")).and_then(Value::as_u64).map(|w| w as u32),
-            height: item.get("original_info").and_then(|i| i.get("height")).and_then(Value::as_u64).map(|h| h as u32),
+            width: item
+                .get("original_info")
+                .and_then(|i| i.get("width"))
+                .and_then(Value::as_u64)
+                .map(|w| w as u32),
+            height: item
+                .get("original_info")
+                .and_then(|i| i.get("height"))
+                .and_then(Value::as_u64)
+                .map(|h| h as u32),
             duration_ms: item
                 .get("video_info")
                 .and_then(|v| v.get("duration_millis"))
@@ -446,8 +450,7 @@ impl Source for X {
         if self.use_bird {
             if !mbm_extract::api::which("bird") {
                 return Err(Error::Agent(
-                    "`bird` is not on the path. remove the bird setting, or install it."
-                        .to_owned(),
+                    "`bird` is not on the path. remove the bird setting, or install it.".to_owned(),
                 ));
             }
             return Ok(());
@@ -491,7 +494,8 @@ impl Source for X {
 
         match self.client.folders.first() {
             None => {
-                let page = self.client.fetch_bookmarks(count, request.collection.as_deref()).await?;
+                let page =
+                    self.client.fetch_bookmarks(count, request.collection.as_deref()).await?;
                 let found = page.bookmarks();
                 skipped += count.saturating_sub(found.len());
                 items = found;

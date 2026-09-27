@@ -496,18 +496,11 @@ fn draw_query(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let hint = if app.tag_input.is_some() {
         format!("tag: {}", app.tag_input.as_deref().unwrap_or_default())
     } else {
-        format!(
-            "search: {}{}",
-            app.query,
-            if app.query.is_empty() { "…" } else { "" }
-        )
+        format!("search: {}{}", app.query, if app.query.is_empty() { "…" } else { "" })
     };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(style::MUTED));
-    let paragraph = Paragraph::new(hint)
-        .block(block)
-        .style(Style::default().fg(style::ACCENT));
+    let block =
+        Block::default().borders(Borders::ALL).border_style(Style::default().fg(style::MUTED));
+    let paragraph = Paragraph::new(hint).block(block).style(Style::default().fg(style::ACCENT));
     frame.render_widget(paragraph, area);
 }
 
@@ -522,7 +515,11 @@ fn draw_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
             Paragraph::new(text)
                 .style(Style::default().fg(style::MUTED))
                 .wrap(Wrap { trim: true })
-                .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(style::MUTED))),
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(style::MUTED)),
+                ),
             area,
         );
         return;
@@ -534,7 +531,10 @@ fn draw_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|(bookmark, _)| {
             let mut spans = vec![
                 Span::styled(
-                    format!("{:>10} ", mbm_sink::date_only(bookmark.created_at.unwrap_or(bookmark.ingested_at))),
+                    format!(
+                        "{:>10} ",
+                        mbm_sink::date_only(bookmark.created_at.unwrap_or(bookmark.ingested_at))
+                    ),
                     Style::default().fg(style::MUTED),
                 ),
                 Span::styled(
@@ -567,11 +567,7 @@ fn draw_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
                 .title(format!(" {} ", app.view.label()))
                 .border_style(Style::default().fg(style::MUTED)),
         )
-        .highlight_style(
-            Style::default()
-                .bg(style::SELECTED)
-                .add_modifier(Modifier::BOLD),
-        );
+        .highlight_style(Style::default().bg(style::SELECTED).add_modifier(Modifier::BOLD));
 
     let mut state = ListState::default();
     state.select(Some(app.selected.min(app.items.len().saturating_sub(1))));
@@ -590,10 +586,7 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     text.push_span(Span::raw(""));
 
     if let Some(when) = bookmark.created_at {
-        text.push_span(Span::styled(
-            mbm_sink::date_time(when),
-            Style::default().fg(style::MUTED),
-        ));
+        text.push_span(Span::styled(mbm_sink::date_time(when), Style::default().fg(style::MUTED)));
     }
     if let Some(author) = &bookmark.author {
         text.push_span(Span::raw(format!("  @{}", author.handle)));
@@ -618,10 +611,7 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         text.push_span(Span::raw(""));
         text.push_span(Span::styled("links", Style::default().fg(style::MUTED)));
         for link in &bookmark.links {
-            let blocked = link
-                .blocked
-                .map(|r| format!("  [{}]", r.name()))
-                .unwrap_or_default();
+            let blocked = link.blocked.map(|r| format!("  [{}]", r.name())).unwrap_or_default();
             text.push_span(Span::raw(format!("  {}{}", link.resolved, blocked)));
         }
     }
@@ -636,12 +626,7 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         text.push_span(Span::styled(
             format!(
                 "in: {}",
-                bookmark
-                    .categories
-                    .iter()
-                    .map(|c| c.slug.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" ")
+                bookmark.categories.iter().map(|c| c.slug.as_str()).collect::<Vec<_>>().join(" ")
             ),
             Style::default().fg(style::MUTED),
         ));
@@ -653,14 +638,12 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     ));
 
     frame.render_widget(
-        Paragraph::new(text)
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" detail — esc to go back ")
-                    .border_style(Style::default().fg(style::MUTED)),
-            ),
+        Paragraph::new(text).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" detail — esc to go back ")
+                .border_style(Style::default().fg(style::MUTED)),
+        ),
         area,
     );
 }
@@ -820,15 +803,9 @@ pub fn blank<'a>() -> Text<'a> {
 pub fn render_to(width: u16, height: u16, app: &mut App) -> String {
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("a test backend always builds");
-    terminal
-        .draw(|frame| draw(frame, app))
-        .expect("drawing into a test backend cannot fail");
+    terminal.draw(|frame| draw(frame, app)).expect("drawing into a test backend cannot fail");
     let buffer = terminal.backend().buffer().clone();
-    buffer
-        .content()
-        .iter()
-        .map(ratatui::buffer::Cell::symbol)
-        .collect::<String>()
+    buffer.content().iter().map(ratatui::buffer::Cell::symbol).collect::<String>()
 }
 
 /// the colours the interface uses, exposed so a test can assert on them.
@@ -858,7 +835,11 @@ mod tests {
         let repo = Repo::new(&conn);
         for i in 0..5 {
             let mut b = Bookmark::new(
-                mbm_core::bookmark::SourceRef::new(mbm_core::medium::SourceMedium::X, format!("{i}"), None),
+                mbm_core::bookmark::SourceRef::new(
+                    mbm_core::medium::SourceMedium::X,
+                    format!("{i}"),
+                    None,
+                ),
                 format!("post {i} about databases and gardening"),
                 0,
             )
@@ -1085,12 +1066,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let conn = Connection::open(dir.path().join("t.db")).unwrap();
         mbm_store::migrate(&conn).unwrap();
-        Repo::new(&conn).insert(&Bookmark::new(
-            mbm_core::bookmark::SourceRef::new(mbm_core::medium::SourceMedium::X, "1", None),
-            "a post about gardening",
-            0,
-        ))
-        .unwrap();
+        Repo::new(&conn)
+            .insert(&Bookmark::new(
+                mbm_core::bookmark::SourceRef::new(mbm_core::medium::SourceMedium::X, "1", None),
+                "a post about gardening",
+                0,
+            ))
+            .unwrap();
         let app = App::new(Arc::new(std::sync::Mutex::new(conn)), "gardening");
         assert_eq!(app.len(), 1);
     }
@@ -1103,9 +1085,18 @@ mod tests {
 
     #[test]
     fn the_control_keys_are_the_usual_ones() {
-        assert_eq!(action_for(&KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)), Action::Clear);
-        assert_eq!(action_for(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)), Action::Refresh);
-        assert_eq!(action_for(&KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL)), Action::Undo);
+        assert_eq!(
+            action_for(&KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
+            Action::Clear
+        );
+        assert_eq!(
+            action_for(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
+            Action::Refresh
+        );
+        assert_eq!(
+            action_for(&KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL)),
+            Action::Undo
+        );
     }
 
     #[test]

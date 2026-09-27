@@ -117,8 +117,8 @@ pub fn parse_hackernews(body: &[u8], collection: Option<&str>) -> Result<Vec<Boo
         hits: Vec<HnItem>,
     }
 
-    let response: Response = serde_json::from_slice(body)
-        .map_err(|e| Error::Ingest(format!("hacker news: {e}")))?;
+    let response: Response =
+        serde_json::from_slice(body).map_err(|e| Error::Ingest(format!("hacker news: {e}")))?;
 
     let mut out = Vec::with_capacity(response.hits.len());
     for hit in response.hits {
@@ -149,15 +149,8 @@ pub fn parse_hackernews(body: &[u8], collection: Option<&str>) -> Result<Vec<Boo
             hit.object_id.as_ref().map(|id| format!("https://news.ycombinator.com/item?id={id}"));
         let url = hit.url.as_deref().or(fallback.as_deref());
 
-        let mut bookmark = build(
-            SourceMedium::HackerNews,
-            id,
-            text,
-            hit.author.as_deref(),
-            None,
-            created,
-            url,
-        );
+        let mut bookmark =
+            build(SourceMedium::HackerNews, id, text, hit.author.as_deref(), None, created, url);
         if hit.parent_id.is_some() {
             bookmark.role = Some(mbm_core::bookmark::ThreadRole::Reply);
         }
@@ -202,9 +195,7 @@ impl Source for HackerNews {
 
     async fn fetch(&self, request: &FetchRequest) -> Result<FetchPage> {
         let limit = request.limit.unwrap_or(50).min(1000);
-        let mut url = format!(
-            "https://hn.algolia.com/api/v1/search_by_date?hitsPerPage={limit}"
-        );
+        let mut url = format!("https://hn.algolia.com/api/v1/search_by_date?hitsPerPage={limit}");
         match self.collection.as_deref() {
             Some(tag) => {
                 use std::fmt::Write as _;
@@ -267,8 +258,8 @@ pub fn parse_reddit(body: &[u8], subreddit: Option<&str>) -> Result<Vec<Bookmark
         stickied: bool,
     }
 
-    let listing: Listing = serde_json::from_slice(body)
-        .map_err(|e| Error::Ingest(format!("reddit: {e}")))?;
+    let listing: Listing =
+        serde_json::from_slice(body).map_err(|e| Error::Ingest(format!("reddit: {e}")))?;
 
     let mut out = Vec::with_capacity(listing.data.children.len());
     for child in listing.data.children {
@@ -290,15 +281,8 @@ pub fn parse_reddit(body: &[u8], subreddit: Option<&str>) -> Result<Vec<Bookmark
             continue;
         }
 
-        let fallback = post
-            .permalink
-            .as_deref()
-            .map(|p| format!("https://www.reddit.com{p}"));
-        let url = post
-            .url
-            .as_deref()
-            .filter(|u| !u.contains("reddit.com"))
-            .or(fallback.as_deref());
+        let fallback = post.permalink.as_deref().map(|p| format!("https://www.reddit.com{p}"));
+        let url = post.url.as_deref().filter(|u| !u.contains("reddit.com")).or(fallback.as_deref());
 
         let mut bookmark = build(
             SourceMedium::Reddit,
@@ -377,10 +361,8 @@ impl Source for Reddit {
     async fn fetch(&self, request: &FetchRequest) -> Result<FetchPage> {
         let limit = request.limit.unwrap_or(50).min(100);
         let path = self.subreddit.as_deref().unwrap_or("all");
-        let url = format!(
-            "https://www.reddit.com/r/{path}/{}/.json?limit={limit}&raw_json=1",
-            self.sort
-        );
+        let url =
+            format!("https://www.reddit.com/r/{path}/{}/.json?limit={limit}&raw_json=1", self.sort);
         let _ = &self.time;
 
         let response = self.http.send(&Request::get(url)).await?;
@@ -416,8 +398,8 @@ pub struct StarredRepo {
 
 /// read a github stars page into bookmarks.
 pub fn parse_github_stars(body: &[u8]) -> Result<Vec<Bookmark>> {
-    let repos: Vec<StarredRepo> = serde_json::from_slice(body)
-        .map_err(|e| Error::Ingest(format!("github: {e}")))?;
+    let repos: Vec<StarredRepo> =
+        serde_json::from_slice(body).map_err(|e| Error::Ingest(format!("github: {e}")))?;
 
     let mut out = Vec::with_capacity(repos.len());
     for repo in repos {
@@ -533,7 +515,8 @@ pub fn parse_feed(body: &[u8], feed_url: &str, medium: SourceMedium) -> Result<V
     let mut cursor = 0usize;
     let is_atom = lower.contains("<feed");
 
-    while let Some(offset) = lower[cursor..].find("<item").or_else(|| lower[cursor..].find("<entry"))
+    while let Some(offset) =
+        lower[cursor..].find("<item").or_else(|| lower[cursor..].find("<entry"))
     {
         let at = cursor + offset;
         let close = if is_atom { "</entry>" } else { "</item>" };
@@ -589,18 +572,15 @@ fn one_feed_entry(
         text.push_str(&strip_html(body));
     }
 
-    let id = tag(block, &lower, "guid")
-        .or_else(|| entry_link.clone())
-        .unwrap_or_else(|| title.clone());
+    let id =
+        tag(block, &lower, "guid").or_else(|| entry_link.clone()).unwrap_or_else(|| title.clone());
     let id = id.trim().to_owned();
     if id.is_empty() {
         return None;
     }
 
-    let target =
-        entry_link.filter(|l| l.starts_with("http")).or_else(|| Some(feed_url.to_owned()));
-    let mut bookmark =
-        build(medium, id, text, author.as_deref(), None, created, target.as_deref());
+    let target = entry_link.filter(|l| l.starts_with("http")).or_else(|| Some(feed_url.to_owned()));
+    let mut bookmark = build(medium, id, text, author.as_deref(), None, created, target.as_deref());
     bookmark.push_tag(feed_host(feed_url));
 
     if let Some(target) = target.as_deref() {
@@ -731,25 +711,18 @@ pub fn youtube_id(url: &str) -> Option<String> {
             let id = parsed.path_segments()?.next()?.to_owned();
             (!id.is_empty()).then_some(id)
         }
-        "youtube.com" | "m.youtube.com" | "music.youtube.com" => {
-            parsed
-                .query_pairs()
-                .find(|(k, _)| k == "v")
-                .map(|(_, v)| v.into_owned())
-                .or_else(|| {
-                    parsed
-                        .path()
-                        .strip_prefix("/embed/")
-                        .map(str::to_owned)
-                        .or_else(|| {
-                            parsed
-                                .path()
-                                .strip_prefix("/shorts/")
-                                .map(str::to_owned)
-                        })
-                })
-                .filter(|id: &String| !id.is_empty())
-        }
+        "youtube.com" | "m.youtube.com" | "music.youtube.com" => parsed
+            .query_pairs()
+            .find(|(k, _)| k == "v")
+            .map(|(_, v)| v.into_owned())
+            .or_else(|| {
+                parsed
+                    .path()
+                    .strip_prefix("/embed/")
+                    .map(str::to_owned)
+                    .or_else(|| parsed.path().strip_prefix("/shorts/").map(str::to_owned))
+            })
+            .filter(|id: &String| !id.is_empty()),
         _ => None,
     }
 }
@@ -983,7 +956,10 @@ mod tests {
 
     #[test]
     fn a_page_that_is_not_a_feed_is_an_error() {
-        assert!(parse_feed(b"<html><body>not a feed</body></html>", "https://x", SourceMedium::Rss).is_err());
+        assert!(
+            parse_feed(b"<html><body>not a feed</body></html>", "https://x", SourceMedium::Rss)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1020,7 +996,8 @@ mod tests {
     #[test]
     fn a_feed_url_becomes_a_tag() {
         let feed = b"<rss><channel><item><title>x</title><link>https://e.com/1</link></item></channel></rss>";
-        let items = parse_feed(feed, "https://news.ycombinator.com/rss", SourceMedium::Rss).unwrap();
+        let items =
+            parse_feed(feed, "https://news.ycombinator.com/rss", SourceMedium::Rss).unwrap();
         assert!(items[0].tags.contains("news.ycombinator.com"), "{:?}", items[0].tags);
     }
 }

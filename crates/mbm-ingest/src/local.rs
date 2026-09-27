@@ -145,8 +145,7 @@ pub fn parse_opml(body: &str) -> Result<Vec<Bookmark>> {
         let tag = &body[at..end];
         cursor = end;
 
-        let has_target =
-            attribute(tag, "url").is_some() || attribute(tag, "xmlUrl").is_some();
+        let has_target = attribute(tag, "url").is_some() || attribute(tag, "xmlUrl").is_some();
         if !has_target
             && let Some(title) = attribute(tag, "text").or_else(|| attribute(tag, "title"))
         {
@@ -161,9 +160,9 @@ pub fn parse_opml(body: &str) -> Result<Vec<Bookmark>> {
         let text = attribute(tag, "text")
             .or_else(|| attribute(tag, "title"))
             .unwrap_or_else(|| url.clone());
-        let created = attribute(tag, "addDate").and_then(|v| v.parse::<i64>().ok()).map(|s| {
-            if s > 1_000_000_000_000 { s / 1_000 } else { s * 1_000 }
-        });
+        let created = attribute(tag, "addDate")
+            .and_then(|v| v.parse::<i64>().ok())
+            .map(|s| if s > 1_000_000_000_000 { s / 1_000 } else { s * 1_000 });
 
         let mut bookmark = make(SourceMedium::BrowserBookmarks, &url, &text, created);
         if let Some(folder) = &folder {
@@ -205,11 +204,10 @@ pub fn parse_url_list(body: &str) -> Result<Vec<Bookmark>> {
 
         // a bare `mailto:` or `ftp:` line is left alone and then rejected,
         // rather than being turned into `https://mailto:...`
-        let has_scheme = candidate
-            .split_once(':')
-            .is_some_and(|(scheme, _)| !scheme.is_empty() && scheme.bytes().all(|b| b.is_ascii_alphanumeric()));
-        let candidate =
-            if has_scheme { candidate } else { format!("https://{candidate}") };
+        let has_scheme = candidate.split_once(':').is_some_and(|(scheme, _)| {
+            !scheme.is_empty() && scheme.bytes().all(|b| b.is_ascii_alphanumeric())
+        });
+        let candidate = if has_scheme { candidate } else { format!("https://{candidate}") };
         let Ok(url) = Url::parse(&candidate) else { continue };
         if !matches!(url.scheme(), "http" | "https") {
             continue;
@@ -294,12 +292,7 @@ enum Kind {
     Json,
 }
 
-fn walk(
-    dir: &Path,
-    recursive: bool,
-    out: &mut Vec<Bookmark>,
-    failed: &mut Vec<(PathBuf, String)>,
-) {
+fn walk(dir: &Path, recursive: bool, out: &mut Vec<Bookmark>, failed: &mut Vec<(PathBuf, String)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         failed.push((dir.to_path_buf(), "cannot read directory".to_owned()));
         return;
@@ -413,8 +406,10 @@ mod tests {
 
     #[test]
     fn the_same_url_from_two_places_gets_the_same_id() {
-        let a = parse_netscape(r#"<DL><p><DT><A HREF="https://example.com/x">X</A></DL><p>"#).unwrap();
-        let b = parse_netscape(r#"<DL><p><DT><A HREF="https://example.com/x">X again</A></DL><p>"#).unwrap();
+        let a =
+            parse_netscape(r#"<DL><p><DT><A HREF="https://example.com/x">X</A></DL><p>"#).unwrap();
+        let b = parse_netscape(r#"<DL><p><DT><A HREF="https://example.com/x">X again</A></DL><p>"#)
+            .unwrap();
         assert_eq!(a[0].source.external_id, b[0].source.external_id);
     }
 
@@ -481,7 +476,12 @@ mod tests {
         std::fs::write(dir.path().join("nested/c.md"), "third").unwrap();
 
         let (found, failed) = read_directory(dir.path(), true);
-        assert_eq!(found.len(), 3, "found {:?}", found.iter().map(|b| b.title.clone()).collect::<Vec<_>>());
+        assert_eq!(
+            found.len(),
+            3,
+            "found {:?}",
+            found.iter().map(|b| b.title.clone()).collect::<Vec<_>>()
+        );
         assert!(failed.is_empty(), "{failed:?}");
     }
 

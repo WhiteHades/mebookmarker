@@ -368,10 +368,7 @@ pub struct TuiArgs {
 impl Cli {
     /// the configuration this invocation uses.
     pub fn config(&self) -> Result<Config> {
-        let path = self
-            .config
-            .clone()
-            .unwrap_or_else(|| Config::path_in(&default_config_dir()));
+        let path = self.config.clone().unwrap_or_else(|| Config::path_in(&default_config_dir()));
         Config::load(&path)
     }
 
@@ -443,16 +440,10 @@ pub async fn add(conn: &Connection, args: &AddArgs) -> Result<Output> {
         // a url that already names a scheme is taken as it is, so a `mailto:`
         // is recognised and refused rather than being turned into
         // `https://mailto:...`
-        let names_a_scheme = raw
-            .split_once(':')
-            .is_some_and(|(scheme, _)| {
-                !scheme.is_empty() && scheme.bytes().all(|b| b.is_ascii_alphanumeric())
-            });
-        let candidate = if names_a_scheme {
-            raw.clone()
-        } else {
-            format!("https://{raw}")
-        };
+        let names_a_scheme = raw.split_once(':').is_some_and(|(scheme, _)| {
+            !scheme.is_empty() && scheme.bytes().all(|b| b.is_ascii_alphanumeric())
+        });
+        let candidate = if names_a_scheme { raw.clone() } else { format!("https://{raw}") };
         let Ok(url) = url::Url::parse(&candidate) else {
             out = out.with(format!("skipped `{raw}`: not a url")).failed();
             continue;
@@ -463,13 +454,16 @@ pub async fn add(conn: &Connection, args: &AddArgs) -> Result<Output> {
         }
 
         let text = args.note.clone().unwrap_or_else(|| url.to_string());
-        let mut bookmark =
-            mbm_core::bookmark::Bookmark::new(
-                mbm_core::bookmark::SourceRef::new(SourceMedium::Manual, url.to_string(), Some(url.clone())),
-                text,
-                now_ms(),
-            )
-            .created_at(now_ms());
+        let mut bookmark = mbm_core::bookmark::Bookmark::new(
+            mbm_core::bookmark::SourceRef::new(
+                SourceMedium::Manual,
+                url.to_string(),
+                Some(url.clone()),
+            ),
+            text,
+            now_ms(),
+        )
+        .created_at(now_ms());
         bookmark.url = Some(url);
         for tag in &args.tag {
             bookmark.push_tag(tag.clone());
@@ -520,11 +514,7 @@ pub fn import(conn: &Connection, args: &ImportArgs) -> Result<Output> {
     }
     if args.dry_run {
         return Ok(out
-            .with(format!(
-                "{} items would be read from {}",
-                items.len(),
-                path.display()
-            ))
+            .with(format!("{} items would be read from {}", items.len(), path.display()))
             .failed_if(&failed));
     }
 
@@ -651,9 +641,8 @@ pub async fn run(conn: &Connection, config: &Config, args: &RunArgs) -> Result<O
         job = job.with_max_pages(Some(pages));
     }
     if let Some(medium) = &args.source {
-        job = job.from_only(
-            medium.parse::<SourceMedium>().map_err(|e| Error::Config(e.to_string()))?,
-        );
+        job = job
+            .from_only(medium.parse::<SourceMedium>().map_err(|e| Error::Config(e.to_string()))?);
     }
     if args.dry_run {
         job = job.dry();
@@ -667,8 +656,8 @@ pub fn search(conn: &Connection, args: &SearchArgs) -> Result<Output> {
     let results = pipeline::search_mode(conn, &args.query, args.rank.into(), args.limit)?;
     if args.json {
         let records: Vec<mbm_sink::json::Record> = results.iter().map(|(b, _)| b.into()).collect();
-        let body = serde_json::to_string_pretty(&records)
-            .map_err(|e| Error::Sink(e.to_string()))?;
+        let body =
+            serde_json::to_string_pretty(&records).map_err(|e| Error::Sink(e.to_string()))?;
         return Ok(Output::line(body));
     }
 
@@ -707,9 +696,8 @@ pub fn list(conn: &Connection, args: &ListArgs) -> Result<Output> {
     // what a person listing two tags means.
     let mut filter = Filter::default();
     if let Some(medium) = &args.source {
-        filter.medium = Some(
-            medium.parse::<SourceMedium>().map_err(|e| Error::Config(e.to_string()))?,
-        );
+        filter.medium =
+            Some(medium.parse::<SourceMedium>().map_err(|e| Error::Config(e.to_string()))?);
     }
     if let Some(tag) = args.tag.first() {
         filter.tag = Some(tag.clone());
@@ -721,8 +709,8 @@ pub fn list(conn: &Connection, args: &ListArgs) -> Result<Output> {
     if args.json {
         let records: Vec<mbm_sink::json::Record> =
             items.iter().map(mbm_sink::json::Record::from).collect();
-        let body = serde_json::to_string_pretty(&records)
-            .map_err(|e| Error::Sink(e.to_string()))?;
+        let body =
+            serde_json::to_string_pretty(&records).map_err(|e| Error::Sink(e.to_string()))?;
         return Ok(Output::line(body));
     }
 
@@ -840,12 +828,7 @@ pub async fn enrich(conn: &Connection, config: &Config, args: &EnrichArgs) -> Re
 
     let mut job = Job::full(config, conn)?;
     if !args.stage.is_empty() {
-        job = job.with_stages(
-            args.stage
-                .iter()
-                .map(|s| EnrichStage::from(*s))
-                .collect(),
-        );
+        job = job.with_stages(args.stage.iter().map(|s| EnrichStage::from(*s)).collect());
     }
     if let Some(limit) = args.limit {
         job = job.with_stage_limit(Some(limit));
@@ -931,17 +914,18 @@ mod tests {
     #[test]
     fn the_help_names_every_subcommand() {
         let help = Cli::command().render_long_help().to_string();
-        for name in ["add", "import", "run", "search", "show", "list", "tag", "export", "enrich", "config", "tui"] {
+        for name in [
+            "add", "import", "run", "search", "show", "list", "tag", "export", "enrich", "config",
+            "tui",
+        ] {
             assert!(help.contains(name), "the help does not mention `{name}`");
         }
     }
 
     #[test]
     fn the_subcommand_names_are_stable() {
-        let names: Vec<String> = Cli::command()
-            .get_subcommands()
-            .map(|c| c.get_name().to_owned())
-            .collect();
+        let names: Vec<String> =
+            Cli::command().get_subcommands().map(|c| c.get_name().to_owned()).collect();
         assert_eq!(
             names,
             vec![
@@ -1011,23 +995,29 @@ mod tests {
     #[tokio::test]
     async fn adding_a_url_stores_it_once() {
         let (_dir, conn) = store();
-        let out = add(&conn, &AddArgs {
-            urls: vec!["example.com/a".to_owned()],
-            tag: vec!["test".to_owned()],
-            note: None,
-            fetch: false,
-})
+        let out = add(
+            &conn,
+            &AddArgs {
+                urls: vec!["example.com/a".to_owned()],
+                tag: vec!["test".to_owned()],
+                note: None,
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
         assert!(out.render().contains("1 added"), "{}", out.render());
         assert_eq!(Repo::new(&conn).count().unwrap(), 1);
 
-        let out = add(&conn, &AddArgs {
-            urls: vec!["example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: None,
-            fetch: false,
-})
+        let out = add(
+            &conn,
+            &AddArgs {
+                urls: vec!["example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: None,
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
         assert!(out.render().contains("already in the archive"), "{}", out.render());
@@ -1036,12 +1026,15 @@ mod tests {
     #[tokio::test]
     async fn a_bare_host_gets_a_scheme() {
         let (_dir, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: None,
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: None,
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
         let items = Repo::new(&conn).list(10, 0).unwrap();
@@ -1051,12 +1044,15 @@ mod tests {
     #[tokio::test]
     async fn a_non_http_url_is_refused_with_a_reason() {
         let (_dir, conn) = store();
-        let out = add(&conn, &AddArgs {
-            urls: vec!["mailto:a@b.example".to_owned()],
-            tag: Vec::new(),
-            note: None,
-            fetch: false,
-})
+        let out = add(
+            &conn,
+            &AddArgs {
+                urls: vec!["mailto:a@b.example".to_owned()],
+                tag: Vec::new(),
+                note: None,
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
         assert!(out.failed);
@@ -1066,12 +1062,15 @@ mod tests {
     #[tokio::test]
     async fn a_note_is_kept_as_the_bookmark_text() {
         let (_dir, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: Some("a note about it".to_owned()),
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: Some("a note about it".to_owned()),
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
         let items = Repo::new(&conn).list(10, 0).unwrap();
@@ -1081,32 +1080,40 @@ mod tests {
     #[tokio::test]
     async fn tagging_adds_and_removes() {
         let (_dir, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: None,
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: None,
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
         let id = Repo::new(&conn).list(10, 0).unwrap()[0].id;
         let repo = Repo::new(&conn);
 
-        tag(&conn, &TagArgs { id: id.get().to_string(), tag: "rust".to_owned(), remove: false }).unwrap();
+        tag(&conn, &TagArgs { id: id.get().to_string(), tag: "rust".to_owned(), remove: false })
+            .unwrap();
         assert!(repo.load(id).unwrap().unwrap().tags.contains("rust"));
-        tag(&conn, &TagArgs { id: id.get().to_string(), tag: "rust".to_owned(), remove: true }).unwrap();
+        tag(&conn, &TagArgs { id: id.get().to_string(), tag: "rust".to_owned(), remove: true })
+            .unwrap();
         assert!(!repo.load(id).unwrap().unwrap().tags.contains("rust"));
     }
 
     #[tokio::test]
     async fn tagging_the_same_thing_twice_says_so_rather_than_failing() {
         let (_dir, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: vec!["rust".to_owned()],
-            note: None,
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: vec!["rust".to_owned()],
+                note: None,
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
         let id = Repo::new(&conn).list(10, 0).unwrap()[0].id.get().to_string();
@@ -1118,7 +1125,8 @@ mod tests {
     #[test]
     fn tagging_something_that_is_not_there_fails_clearly() {
         let (_dir, conn) = store();
-        let out = tag(&conn, &TagArgs { id: "1".to_owned(), tag: "x".to_owned(), remove: false }).unwrap();
+        let out = tag(&conn, &TagArgs { id: "1".to_owned(), tag: "x".to_owned(), remove: false })
+            .unwrap();
         assert!(out.failed);
         assert!(out.render().contains("no bookmark"), "{}", out.render());
     }
@@ -1126,19 +1134,23 @@ mod tests {
     #[test]
     fn a_tag_argument_that_is_not_an_id_is_a_config_error() {
         let (_dir, conn) = store();
-        let err = tag(&conn, &TagArgs { id: "abc".to_owned(), tag: "x".to_owned(), remove: false }).unwrap_err();
+        let err = tag(&conn, &TagArgs { id: "abc".to_owned(), tag: "x".to_owned(), remove: false })
+            .unwrap_err();
         assert!(err.to_string().contains("abc"), "{err}");
     }
 
     #[tokio::test]
     async fn deleting_removes_the_row() {
         let (_dir, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: None,
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: None,
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
         let id = Repo::new(&conn).list(10, 0).unwrap()[0].id.get().to_string();
@@ -1157,20 +1169,21 @@ mod tests {
     #[tokio::test]
     async fn searching_finds_what_was_added() {
         let (_dir, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/sqlite-internals".to_owned()],
-            tag: Vec::new(),
-            note: Some("a note about sqlite internals".to_owned()),
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/sqlite-internals".to_owned()],
+                tag: Vec::new(),
+                note: Some("a note about sqlite internals".to_owned()),
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
-        let out = search(&conn, &SearchArgs {
-            query: "sqlite".to_owned(),
-            limit: 10,
-            rank: Rank::Hybrid,
-            json: false,
-        })
+        let out = search(
+            &conn,
+            &SearchArgs { query: "sqlite".to_owned(), limit: 10, rank: Rank::Hybrid, json: false },
+        )
         .unwrap();
         assert!(out.render().contains("sqlite internals"), "{}", out.render());
     }
@@ -1178,20 +1191,21 @@ mod tests {
     #[tokio::test]
     async fn searching_for_nothing_lists_everything() {
         let (_dir, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: None,
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: None,
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
-        let out = search(&conn, &SearchArgs {
-            query: String::new(),
-            limit: 10,
-            rank: Rank::Hybrid,
-            json: false,
-        })
+        let out = search(
+            &conn,
+            &SearchArgs { query: String::new(), limit: 10, rank: Rank::Hybrid, json: false },
+        )
         .unwrap();
         assert!(out.render().contains("1 results"), "{}", out.render());
     }
@@ -1199,20 +1213,21 @@ mod tests {
     #[tokio::test]
     async fn search_prints_json_when_asked() {
         let (_dir, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: None,
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: None,
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
-        let out = search(&conn, &SearchArgs {
-            query: String::new(),
-            limit: 10,
-            rank: Rank::Hybrid,
-            json: true,
-        })
+        let out = search(
+            &conn,
+            &SearchArgs { query: String::new(), limit: 10, rank: Rank::Hybrid, json: true },
+        )
         .unwrap();
         serde_json::from_str::<Vec<mbm_sink::json::Record>>(&out.render()).unwrap();
     }
@@ -1220,12 +1235,15 @@ mod tests {
     #[tokio::test]
     async fn showing_by_id_prints_the_record() {
         let (_dir, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: Some("a note".to_owned()),
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: Some("a note".to_owned()),
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
         let id = Repo::new(&conn).list(10, 0).unwrap()[0].id.get().to_string();
@@ -1245,31 +1263,40 @@ mod tests {
     #[tokio::test]
     async fn listing_filters_by_tag() {
         let (_dir, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: vec!["rust".to_owned()],
-            note: None,
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: vec!["rust".to_owned()],
+                note: None,
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
-        let out = list(&conn, &ListArgs {
-            limit: 10,
-            offset: 0,
-            tag: vec!["rust".to_owned()],
-            source: None,
-            json: false,
-        })
+        let out = list(
+            &conn,
+            &ListArgs {
+                limit: 10,
+                offset: 0,
+                tag: vec!["rust".to_owned()],
+                source: None,
+                json: false,
+            },
+        )
         .unwrap();
         assert!(out.render().contains("1 shown"), "{}", out.render());
 
-        let out = list(&conn, &ListArgs {
-            limit: 10,
-            offset: 0,
-            tag: vec!["absent".to_owned()],
-            source: None,
-            json: false,
-        })
+        let out = list(
+            &conn,
+            &ListArgs {
+                limit: 10,
+                offset: 0,
+                tag: vec!["absent".to_owned()],
+                source: None,
+                json: false,
+            },
+        )
         .unwrap();
         assert!(out.render().contains("0 shown"), "{}", out.render());
     }
@@ -1277,21 +1304,27 @@ mod tests {
     #[tokio::test]
     async fn listing_filters_by_medium() {
         let (_dir, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: None,
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: None,
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
-        let out = list(&conn, &ListArgs {
-            limit: 10,
-            offset: 0,
-            tag: Vec::new(),
-            source: Some("reddit".to_owned()),
-            json: false,
-        })
+        let out = list(
+            &conn,
+            &ListArgs {
+                limit: 10,
+                offset: 0,
+                tag: Vec::new(),
+                source: Some("reddit".to_owned()),
+                json: false,
+            },
+        )
         .unwrap();
         assert!(out.render().contains("0 shown"), "{}", out.render());
     }
@@ -1299,13 +1332,16 @@ mod tests {
     #[test]
     fn an_unknown_medium_is_a_config_error() {
         let (_dir, conn) = store();
-        let err = list(&conn, &ListArgs {
-            limit: 10,
-            offset: 0,
-            tag: Vec::new(),
-            source: Some("telepathy".to_owned()),
-            json: false,
-        })
+        let err = list(
+            &conn,
+            &ListArgs {
+                limit: 10,
+                offset: 0,
+                tag: Vec::new(),
+                source: Some("telepathy".to_owned()),
+                json: false,
+            },
+        )
         .unwrap_err();
         assert!(err.to_string().contains("telepathy"), "{err}");
     }
@@ -1317,12 +1353,10 @@ mod tests {
         std::fs::write(&path, "https://example.com/a\nhttps://example.com/b\n").unwrap();
 
         let (_db, conn) = store();
-        let out = import(&conn, &ImportArgs {
-            path: path.clone(),
-            recursive: false,
-            format: None,
-            dry_run: false,
-        })
+        let out = import(
+            &conn,
+            &ImportArgs { path: path.clone(), recursive: false, format: None, dry_run: false },
+        )
         .unwrap();
         assert!(out.render().contains("2 added"), "{}", out.render());
         assert_eq!(Repo::new(&conn).count().unwrap(), 2);
@@ -1339,13 +1373,9 @@ mod tests {
         .unwrap();
 
         let (_db, conn) = store();
-        let out = import(&conn, &ImportArgs {
-            path,
-            recursive: false,
-            format: None,
-            dry_run: false,
-        })
-        .unwrap();
+        let out =
+            import(&conn, &ImportArgs { path, recursive: false, format: None, dry_run: false })
+                .unwrap();
         assert!(out.render().contains("2 added"), "{}", out.render());
     }
 
@@ -1356,12 +1386,15 @@ mod tests {
         std::fs::write(dir.path().join("b.md"), "two").unwrap();
 
         let (_db, conn) = store();
-        let out = import(&conn, &ImportArgs {
-            path: dir.path().to_path_buf(),
-            recursive: false,
-            format: None,
-            dry_run: false,
-        })
+        let out = import(
+            &conn,
+            &ImportArgs {
+                path: dir.path().to_path_buf(),
+                recursive: false,
+                format: None,
+                dry_run: false,
+            },
+        )
         .unwrap();
         assert!(out.render().contains("2 added"), "{}", out.render());
     }
@@ -1373,13 +1406,9 @@ mod tests {
         std::fs::write(&path, "https://example.com/a\n").unwrap();
 
         let (_db, conn) = store();
-        let out = import(&conn, &ImportArgs {
-            path,
-            recursive: false,
-            format: None,
-            dry_run: true,
-        })
-        .unwrap();
+        let out =
+            import(&conn, &ImportArgs { path, recursive: false, format: None, dry_run: true })
+                .unwrap();
         assert!(out.render().contains("would be read"), "{}", out.render());
         assert_eq!(Repo::new(&conn).count().unwrap(), 0);
     }
@@ -1387,12 +1416,15 @@ mod tests {
     #[test]
     fn importing_something_that_is_not_there_is_a_config_error() {
         let (_db, conn) = store();
-        let err = import(&conn, &ImportArgs {
-            path: PathBuf::from("/nonexistent/path/xyz"),
-            recursive: false,
-            format: None,
-            dry_run: false,
-        })
+        let err = import(
+            &conn,
+            &ImportArgs {
+                path: PathBuf::from("/nonexistent/path/xyz"),
+                recursive: false,
+                format: None,
+                dry_run: false,
+            },
+        )
         .unwrap_err();
         assert!(err.to_string().contains("does not exist"), "{err}");
     }
@@ -1403,7 +1435,8 @@ mod tests {
         let path = dir.path().join("urls.txt");
         std::fs::write(&path, "https://example.com/a\n").unwrap();
         let (_db, conn) = store();
-        let args = ImportArgs { path: path.clone(), recursive: false, format: None, dry_run: false };
+        let args =
+            ImportArgs { path: path.clone(), recursive: false, format: None, dry_run: false };
         import(&conn, &args).unwrap();
         let out = import(&conn, &args).unwrap();
         assert!(out.render().contains("already in the archive"), "{}", out.render());
@@ -1421,13 +1454,9 @@ mod tests {
         .unwrap();
 
         let (_db, conn) = store();
-        let out = import(&conn, &ImportArgs {
-            path,
-            recursive: false,
-            format: None,
-            dry_run: false,
-        })
-        .unwrap();
+        let out =
+            import(&conn, &ImportArgs { path, recursive: false, format: None, dry_run: false })
+                .unwrap();
         assert!(out.render().contains("1 added"), "{}", out.render());
         assert_eq!(Repo::new(&conn).list(10, 0).unwrap()[0].text, "a post");
     }
@@ -1442,13 +1471,9 @@ mod tests {
         )
         .unwrap();
         let (_db, conn) = store();
-        let out = import(&conn, &ImportArgs {
-            path,
-            recursive: false,
-            format: None,
-            dry_run: false,
-        })
-        .unwrap();
+        let out =
+            import(&conn, &ImportArgs { path, recursive: false, format: None, dry_run: false })
+                .unwrap();
         assert!(out.render().contains("1 added"), "{}", out.render());
     }
 
@@ -1456,12 +1481,11 @@ mod tests {
     async fn the_status_reports_what_is_waiting() {
         let config = Config::default();
         let (_db, conn) = store();
-        let out = enrich(&conn, &config, &EnrichArgs {
-            stage: Vec::new(),
-            limit: None,
-            redo: None,
-            status: true,
-        })
+        let out = enrich(
+            &conn,
+            &config,
+            &EnrichArgs { stage: Vec::new(), limit: None, redo: None, status: true },
+        )
         .await
         .unwrap();
         assert!(out.render().contains("bookmarks"), "{}", out.render());
@@ -1470,22 +1494,29 @@ mod tests {
     #[tokio::test]
     async fn redoing_a_stage_puts_rows_back_and_says_how_many() {
         let (_d, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: Some("a post about a thing".to_owned()),
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: Some("a post about a thing".to_owned()),
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
 
         let config = Config::default();
-        let out = enrich(&conn, &config, &EnrichArgs {
-            stage: Vec::new(),
-            limit: None,
-            redo: Some(EnrichStageArg::Entities),
-            status: true,
-        })
+        let out = enrich(
+            &conn,
+            &config,
+            &EnrichArgs {
+                stage: Vec::new(),
+                limit: None,
+                redo: Some(EnrichStageArg::Entities),
+                status: true,
+            },
+        )
         .await
         .unwrap();
         assert!(out.render().contains("1 bookmarks put back"), "{}", out.render());
@@ -1494,22 +1525,29 @@ mod tests {
     #[tokio::test]
     async fn running_the_stages_writes_a_fingerprint() {
         let (_d, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: Some("a post about sqlite internals".to_owned()),
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: Some("a post about sqlite internals".to_owned()),
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
 
         let config = Config::default();
-        let out = enrich(&conn, &config, &EnrichArgs {
-            stage: vec![EnrichStageArg::Entities],
-            limit: None,
-            redo: None,
-            status: false,
-        })
+        let out = enrich(
+            &conn,
+            &config,
+            &EnrichArgs {
+                stage: vec![EnrichStageArg::Entities],
+                limit: None,
+                redo: None,
+                status: false,
+            },
+        )
         .await
         .unwrap();
         assert!(out.render().contains("entities"), "{}", out.render());
@@ -1522,9 +1560,10 @@ mod tests {
         let (_d, conn) = store();
         let mut config = Config::default();
         config.sources.clear();
-        let out = run(&conn, &config, &RunArgs { limit: None, pages: None, source: None, dry_run: true })
-            .await
-            .unwrap();
+        let out =
+            run(&conn, &config, &RunArgs { limit: None, pages: None, source: None, dry_run: true })
+                .await
+                .unwrap();
         assert!(out.render().contains("fetched"), "{}", out.render());
     }
 
@@ -1532,12 +1571,15 @@ mod tests {
     async fn a_dry_run_writes_no_sink() {
         let dir = tempfile::tempdir().unwrap();
         let (_d, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: Some("a post".to_owned()),
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: Some("a post".to_owned()),
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
 
@@ -1558,12 +1600,15 @@ mod tests {
     async fn exporting_writes_the_configured_sink() {
         let dir = tempfile::tempdir().unwrap();
         let (_d, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: Some("a post".to_owned()),
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: Some("a post".to_owned()),
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
 
@@ -1585,12 +1630,15 @@ mod tests {
     async fn exporting_to_an_explicit_path_uses_that_path() {
         let dir = tempfile::tempdir().unwrap();
         let (_d, conn) = store();
-        add(&conn, &AddArgs {
-            urls: vec!["https://example.com/a".to_owned()],
-            tag: Vec::new(),
-            note: Some("a post".to_owned()),
-            fetch: false,
-})
+        add(
+            &conn,
+            &AddArgs {
+                urls: vec!["https://example.com/a".to_owned()],
+                tag: Vec::new(),
+                note: Some("a post".to_owned()),
+                fetch: false,
+            },
+        )
         .await
         .unwrap();
         let mut config = Config::default();
