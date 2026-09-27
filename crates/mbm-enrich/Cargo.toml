@@ -1,0 +1,29 @@
+[package]
+name = "mbm-enrich"
+description = "The staged enrichment pipeline."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+ahash.workspace = true
+async-trait.workspace = true
+blake3.workspace = true
+mbm-agent.workspace = true
+mbm-core.workspace = true
+mbm-extract.workspace = true
+mbm-jev.workspace = true
+mbm-store.workspace = true
+rayon.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+url.workspace = true
