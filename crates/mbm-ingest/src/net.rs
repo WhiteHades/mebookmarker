@@ -1,7 +1,7 @@
 //! the network source adapters.
 //!
 //! one file per family, one shape of response per family. they all share the
-//! [`Source`](mbm_core::port::Source) port, so adding a new one here changes
+//! [`mbm_core::port::Source`] port, so adding a new one here changes
 //! nothing above.
 //!
 //! every adapter is written to be testable without a network: the parsing half
