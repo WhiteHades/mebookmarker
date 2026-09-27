@@ -25,6 +25,8 @@ async-trait.workspace = true
 tracing.workspace = true
 dirs.workspace = true
 jiff.workspace = true
+blake3.workspace = true
+percent-encoding.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "fs"] }
