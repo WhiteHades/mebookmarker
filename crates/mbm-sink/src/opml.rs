@@ -147,7 +147,9 @@ impl Sink for Opml {
             .lock()
             .map_err(|_| mbm_core::Error::Sink("the opml sink's buffer is poisoned".to_owned()))?;
         buffer.extend(items.iter().map(|b| (*b).clone()));
-        Ok(SinkReport { written: items.len(), ..SinkReport::default() })
+        // the count is reported once, at `finish`, so a caller that adds two
+        // reports together does not see every bookmark twice
+        Ok(SinkReport::default())
     }
 
     async fn finish(&self) -> Result<SinkReport> {
