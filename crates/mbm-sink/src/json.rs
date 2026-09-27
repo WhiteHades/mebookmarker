@@ -288,7 +288,7 @@ impl Sink for Json {
         let body = serde_json::to_vec_pretty(&Self::document(&records))
             .map_err(|e| mbm_core::Error::Sink(e.to_string()))?;
         write_to(&self.path, &body)?;
-        Ok(SinkReport { written: count, ..SinkReport::default() })
+        Ok(SinkReport { written: count, files: 1, ..SinkReport::default() })
     }
 }
 
@@ -462,6 +462,7 @@ mod tests {
 
         let report = sink.finish().await.unwrap();
         assert_eq!(report.written, 1);
+        assert_eq!(report.files, 1, "one document is one file");
         let body = std::fs::read_to_string(&path).unwrap();
         let value: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value["count"], 1);
