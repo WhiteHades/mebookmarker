@@ -91,6 +91,29 @@ pub struct Media {
     pub alt_text: Option<String>,
 }
 
+/// generate a `name`/`parse` pair for an enum whose storage form is kebab-case.
+///
+/// storage goes through these rather than through serde: a plain column holds
+/// `jev`, while a serde string would hold `"jev"`, and a column that quotes its
+/// own values does not read back cleanly with ordinary SQL.
+macro_rules! stored_name {
+    ($ty:ty, { $($variant:ident => $name:literal),+ $(,)? }, default = $fallback:expr) => {
+        impl $ty {
+            /// the stored name.
+            #[must_use]
+            pub const fn name(self) -> &'static str {
+                match self { $(Self::$variant => $name),+ }
+            }
+
+            /// parse a stored name.
+            #[must_use]
+            pub fn parse(raw: &str) -> Self {
+                match raw { $($name => Self::$variant,)+ _ => $fallback }
+            }
+        }
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MediaKind {
@@ -307,6 +330,12 @@ impl Bookmark {
 
     #[must_use]
     pub fn tag(mut self, tag: impl AsRef<str>) -> Self {
+        self.push_tag(tag);
+        self
+    }
+
+    /// add a tag in place, for callers that already own the bookmark.
+    pub fn push_tag(&mut self, tag: impl AsRef<str>) -> &mut Self {
         let tag = tag.as_ref().trim();
         if !tag.is_empty() {
             self.tags.insert(tag.to_ascii_lowercase());
@@ -483,3 +512,48 @@ mod tests {
         assert!(back.links.is_empty());
     }
 }
+
+stored_name!(
+    MediaKind,
+    { Photo => "photo", Video => "video", Gif => "gif", Audio => "audio" },
+    default = MediaKind::Photo
+);
+stored_name!(
+    Assigner,
+    { Rule => "rule", Jev => "jev", Agent => "agent", Human => "human" },
+    default = Assigner::Rule
+);
+impl BlockedReason {
+    /// the stored name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Paywall => "paywall",
+            Self::NeedsRendering => "needs-rendering",
+            Self::Refused => "refused",
+            Self::Gone => "gone",
+            Self::Empty => "empty",
+        }
+    }
+
+    /// parse a stored name. an unrecognised value means the column is stale or
+    /// hand-edited, and the right answer there is to treat the link as still
+    /// fetchable.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        Some(match raw {
+            "paywall" => Self::Paywall,
+            "needs-rendering" => Self::NeedsRendering,
+            "refused" => Self::Refused,
+            "gone" => Self::Gone,
+            "empty" => Self::Empty,
+            _ => return None,
+        })
+    }
+}
+
+stored_name!(
+    ThreadRole,
+    { Original => "original", Quote => "quote", Reply => "reply", Thread => "thread" },
+    default = ThreadRole::Original
+);
