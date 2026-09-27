@@ -115,14 +115,18 @@ pub fn display_title(bookmark: &Bookmark) -> String {
 }
 
 /// the one-line summary of a bookmark, if it has one.
+///
+/// the row's own summary first, because that is where the describe stage puts
+/// it, and the first link's second, because that is where an extractor puts one
+/// for a page that has links.
 #[must_use]
 pub fn summary_of(bookmark: &Bookmark) -> Option<&str> {
     bookmark
-        .links
-        .iter()
-        .find_map(|l| l.summary.as_deref())
+        .summary
+        .as_deref()
+        .or_else(|| bookmark.links.iter().find_map(|l| l.summary.as_deref()))
         .map(str::trim)
-        .filter(|s| !s.is_empty())
+        .filter(|summary| !summary.is_empty())
 }
 
 /// collapse a string onto one line and cap it.
