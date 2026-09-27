@@ -7,7 +7,7 @@
 //! without a full parse.
 //!
 //! the alternative was a headless browser, which is what
-//! [`crate::browser`] is for when this returns nothing.
+//! [`crate::api::Browser`] is for when this returns nothing.
 
 use mbm_core::bookmark::BlockedReason;
 
