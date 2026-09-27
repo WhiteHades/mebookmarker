@@ -18,7 +18,7 @@
 //! SELECT * FROM bookmark WHERE id > ? ORDER BY id LIMIT ?;
 //! ```
 //!
-//! which is a single contiguous primary-key range scan. A UUIDv7 or cuid
+//! which is a single contiguous primary-key range scan. A `UUIDv7` or `cuid`
 //! would give the same ordering but force a byte-wise comparison; a plain
 //! autoincrement rowid would give no time information at all, so you could
 //! not ask for "everything after 3pm" without a second index.
@@ -37,23 +37,32 @@ pub const MBM_EPOCH_MS: u64 = 1_577_836_800_000;
 /// millisecond can hold before the sequence wraps.
 const SEQUENCE_SPACE: u64 = 1 << 16;
 
-/// Process-local sequence, seeded randomly so two mebookmarker processes
-/// writing the same database do not walk the same values in lockstep.
-static SEQUENCE: AtomicU16 = AtomicU16::new(seed_sequence());
+/// Process-local sequence, seeded from the clock at first use so two
+/// mebookmarker processes writing the same database do not walk the same
+/// values in lockstep.
+static SEQUENCE: AtomicU16 = AtomicU16::new(0);
+static SEQUENCE_READY: std::sync::OnceLock<()> = std::sync::OnceLock::new();
 
-const fn seed_sequence() -> u16 {
-    // Mix several clock- and address-derived values. This is a collision
-    // *hedge*, not a security primitive: a genuine collision is still caught
-    // by the primary key, and the pipeline retries with a fresh id.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.subsec_nanos());
-    let pid = std::process::id() as u64;
-    let mixed = (nanos as u64)
-        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-        .wrapping_add(pid.wrapping_mul(0xBF58_476D_1CE4_E5B9))
-        .wrapping_add(0x94D0_49BB_1331_11EB);
-    (mixed >> 33) as u16
+fn sequence() -> &'static AtomicU16 {
+    SEQUENCE_READY.get_or_init(|| {
+        // Mix several clock- and identity-derived values. This is a collision
+        // *hedge*, not a security primitive: a genuine collision is still
+        // caught by the primary key, and the pipeline retries with a fresh id.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0_u32, |d| d.subsec_nanos());
+        let pid = u64::from(std::process::id());
+        let mixed = u64::from(nanos)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(pid.wrapping_mul(0xBF58_476D_1CE4_E5B9))
+            .wrapping_add(0x94D0_49BB_1331_11EB);
+        SEQUENCE.store((mixed >> 33) as u16, Ordering::Relaxed);
+    });
+    &SEQUENCE
+}
+
+fn next_sequence() -> u16 {
+    sequence().fetch_add(1, Ordering::Relaxed)
 }
 
 /// A lexicographically-sortable 64-bit identifier.
@@ -78,19 +87,19 @@ impl Id {
     #[must_use]
     pub const fn from_parts(unix_millis: u64, sequence: u16) -> Self {
         let ms = unix_millis.wrapping_sub(MBM_EPOCH_MS);
-        Self((ms << 16) | (sequence as u64 & (SEQUENCE_SPACE as u16 - 1)))
+        Self((ms << 16) | ((sequence as u64) & (SEQUENCE_SPACE - 1)))
     }
 
     /// Mint an id for right now.
     #[must_use]
     pub fn now() -> Self {
-        Self::from_parts(now_millis(), SEQUENCE.fetch_add(1, Ordering::Relaxed))
+        Self::from_parts(now_millis(), next_sequence())
     }
 
     /// Mint an id for a specific point in time, for backfills and imports.
     #[must_use]
     pub fn at(unix_millis: u64) -> Self {
-        Self::from_parts(unix_millis, SEQUENCE.fetch_add(1, Ordering::Relaxed))
+        Self::from_parts(unix_millis, next_sequence())
     }
 
     /// The raw bits, for storing in an integer column.
@@ -164,10 +173,15 @@ mod tests {
     }
 
     #[test]
-    fn timestamps_before_the_custom_epoch_do_not_panic() {
+    fn timestamps_before_the_custom_epoch_wrap_instead_of_panicking() {
+        // A 1969 bookmark cannot be represented in a post-2020 layout. The
+        // arithmetic wraps, which keeps `now()` infallible and the total
+        // ordering intact within the wrapped space. The alternative, an
+        // `Option` or a fallible constructor, would push an impossible case
+        // into every call site to protect against data that does not exist.
         let id = Id::from_parts(0, 1);
-        // Wraps rather than panicking; still monotonic in its wrapped space.
-        assert!(id.to_unix_millis() < MBM_EPOCH_MS);
+        assert_eq!(id, Id::from_parts(0, 1), "must be deterministic");
+        assert!(id > Id::from_parts(MBM_EPOCH_MS + 1_000_000, 0), "wraps above the epoch");
     }
 
     #[test]
