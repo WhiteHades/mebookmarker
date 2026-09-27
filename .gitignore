@@ -22,21 +22,6 @@
 /index/*.idx
 /cache/
 
-# ─── Agent and skill files — local only, never published ──────────────────
-# These drive coding agents in this repo. They are personal workflow config,
-# not part of the project, so they stay out of the public repository.
-/AGENTS.md
-/CLAUDE.md
-/.claude/
-/.agents/
-/.mattpocock/
-/.scratch/
-/docs/agents/
-/skills/
-/thoughts/
-/tmp/
-/.tmp/
-
 # ─── Generated output ─────────────────────────────────────────────────────
 # Rendered artifacts are reproducible from the database; do not commit them.
 /out/
