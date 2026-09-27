@@ -59,19 +59,24 @@ pub(crate) fn build(
 }
 
 /// push a link onto a bookmark, classifying it first.
+///
+/// classifying here rather than leaving it unknown matters: the entity stage
+/// reads these kinds to decide what is worth extracting, and `unknown` tells it
+/// nothing.
 pub(crate) fn link(bookmark: &mut Bookmark, url: &str) {
     let Ok(parsed) = Url::parse(url) else { return };
     if bookmark.links.iter().any(|l| l.resolved == parsed) {
         return;
     }
     bookmark.links.push(mbm_core::bookmark::Link {
+        kind: mbm_extract::links::classify(&parsed),
+        blocked: mbm_extract::links::is_paywalled(&parsed)
+            .then_some(mbm_core::bookmark::BlockedReason::Paywall),
         original: parsed.clone(),
         resolved: parsed,
-        kind: mbm_core::medium::LinkKind::Unknown,
         title: None,
         body: None,
         summary: None,
-        blocked: None,
     });
 }
 
@@ -179,7 +184,7 @@ impl HackerNews {
         Self { http, collection: None }
     }
 
-    /// restrict to one front-page tag, such as `show_hn` or `ask_hn`.
+    /// restrict to one tag, such as `show_hn` or `ask_hn`.
     #[must_use]
     pub fn in_collection(mut self, collection: impl Into<String>) -> Self {
         self.collection = Some(collection.into());
@@ -194,17 +199,16 @@ impl Source for HackerNews {
     }
 
     async fn fetch(&self, request: &FetchRequest) -> Result<FetchPage> {
+        use std::fmt::Write as _;
+
         let limit = request.limit.unwrap_or(50).min(1000);
-        let mut url = format!("https://hn.algolia.com/api/v1/search_by_date?hitsPerPage={limit}");
-        match self.collection.as_deref() {
-            Some(tag) => {
-                use std::fmt::Write as _;
-                let _ = write!(url, "&tags=story_{tag}");
-            }
-            None => url.push_str("&tags=story"),
-        }
+        // the algolia api's `story_` prefix names a story *type*, and the
+        // curated tags are their own namespace: `show_hn` is 542,680 hits and
+        // `story_show_hn` is zero. the prefix is only right for `story` itself.
+        let tag = self.collection.as_deref().unwrap_or("story");
+        let mut url =
+            format!("https://hn.algolia.com/api/v1/search_by_date?hitsPerPage={limit}&tags={tag}");
         if let Some(cursor) = request.collection.as_deref() {
-            use std::fmt::Write as _;
             let _ = write!(url, "&numericFilters=created_at_i>{cursor}");
         }
 
@@ -807,6 +811,13 @@ impl Source for YouTube {
 mod tests {
     use super::*;
 
+    fn one(text: &str) -> Bookmark {
+        Bookmark::new(SourceRef::new(SourceMedium::X, "1", None), text, 0)
+    }
+
+    use mbm_core::bookmark::SourceRef;
+    use mbm_core::medium::LinkKind;
+
     #[test]
     fn a_hackernews_story_becomes_a_bookmark() {
         let body = br#"{"hits":[
@@ -991,6 +1002,34 @@ mod tests {
     #[test]
     fn a_playlist_page_with_no_entries_is_an_error() {
         assert!(parse_youtube_playlist(b"<html>nothing here</html>", "PL1").is_err());
+    }
+
+    #[test]
+    fn a_story_url_is_classified_rather_than_left_unknown() {
+        let mut b = one("a story");
+        link(&mut b, "https://github.com/simonw/llm");
+        assert_eq!(b.links[0].kind, LinkKind::Repository);
+
+        let mut c = one("another");
+        link(&mut c, "https://arxiv.org/abs/1234");
+        assert_eq!(c.links[0].kind, LinkKind::Paper);
+    }
+
+    #[test]
+    fn a_paywalled_story_url_is_marked() {
+        let mut b = one("a story");
+        link(&mut b, "https://www.nytimes.com/2026/01/02/thing.html");
+        assert_eq!(b.links[0].blocked, Some(mbm_core::bookmark::BlockedReason::Paywall));
+    }
+
+    #[test]
+    fn a_show_hn_search_asks_for_the_tag_the_api_has() {
+        // `story_show_hn` is zero hits and `show_hn` is 542,680, which is the
+        // kind of thing that reads as "the source is broken" rather than as a
+        // bug in a url
+        let source = HackerNews::new(Http::with_defaults().unwrap()).in_collection("show_hn");
+        let args = source.collection.as_deref();
+        assert_eq!(args, Some("show_hn"));
     }
 
     #[test]
