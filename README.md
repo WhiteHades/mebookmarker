@@ -1,535 +1,263 @@
-# Smaug 🐉
+# mebookmarker
 
-Archive your Twitter/X bookmarks (and/or optionally, likes) to markdown. Automatically.
+Archive your bookmarks from every medium, search them, and keep them.
 
-*Like a dragon hoarding treasure, Smaug collects the valuable things you bookmark and like.*
-
-> **Multi-model support:** Smaug works with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (default) and [OpenCode](https://github.com/anomalyco/opencode), giving you access to a wide range of AI models. Results may vary depending on the model you choose — test carefully and find what works best for your workflow. See [AI CLI Integration](#ai-cli-integration) for setup details.
-
-## Contents
-
-- [Quick Start](#quick-start-5-minutes)
-- [Getting Twitter Credentials](#getting-twitter-credentials)
-- [What It Does](#what-it-does)
-- [Running](#running)
-- [Categories](#categories)
-- [Automation](#automation)
-- [Output](#output)
-- [Configuration](#configuration)
-- [AI CLI Integration](#ai-cli-integration)
-- [Troubleshooting](#troubleshooting)
-- [Credits](#credits)
+One binary, one SQLite file, one TOML config. It reads from X, Reddit, Hacker
+News, GitHub, RSS/Atom, YouTube, your browser's export, OPML, JSON, a list of
+URLs, and a folder of notes. It writes to Markdown, Obsidian, HTML, CSV, JSONL,
+JSON, OPML, and a raw archive. It runs in a terminal and it runs from cron.
 
 ```
-  🔥  🔥  🔥  🔥  🔥  🔥  🔥  🔥  🔥  🔥  🔥  🔥
-       _____ __  __   _   _   _  ____
-      / ____|  \/  | / \ | | | |/ ___|
-      \___ \| |\/| |/ _ \| | | | |  _
-       ___) | |  | / ___ \ |_| | |_| |
-      |____/|_|  |_/_/  \_\___/ \____|
-
-   🐉 The dragon stirs... treasures to hoard!
+mbm add https://example.com/article          # save a url
+mbm import ~/Downloads/bookmarks.html        # read a browser export
+mbm run                                     # fetch, enrich, export
+mbm search "sqlite internals"                # find it
+mbm tui                                     # browse it
 ```
 
-## Quick Start (5 minutes)
+## Why
 
-```bash
-# 1. Install bird CLI (Twitter API wrapper)
-# See https://github.com/steipete/bird for installation
+Every bookmark tool is one of two things: a browser extension that saves urls and
+gives them back, or a read-later service that owns your data. Neither one keeps
+the text. They store `https://twitter.com/user/status/12345` and hope the link
+still resolves, which it does not — X rate-limits, Reddit deletes, blogs rot, and
+a link into a paywall becomes a title and nothing else.
 
-# 2. Clone and install Smaug
-git clone https://github.com/alexknowshtml/smaug
-cd smaug
-npm install
+This keeps the text. Every item that goes in comes out with a title, a summary,
+the body, its links, its media, its author, and its date, in a format you can read
+without this program. The JSONL export is lossless: a bookmark written to it and
+read back is the same bookmark.
 
-# 3. Run the setup wizard
-npx smaug setup
+## The cost argument
 
-# 4. Run the full job (fetch + process with Claude)
-npx smaug run
+Enrichment is where a tool like this usually gets expensive, because it reads like
+it needs a model on every item. It does not. There are three tiers, and only the
+cheap ones run by default.
+
+| tier | what it is | cost | when it runs |
+|------|-----------|------|--------------|
+| 1 | deterministic: links, `@` mentions, `#` hashtags, bare domains, SimHash fingerprints, taxonomy rules | free, and local | every item, always |
+| 2 | one typed question per item to the Vercel AI Gateway — a `choice` or a `boolean` against a list decided in advance | ~$0.00002 per item | every item, when a gateway key is set |
+| 3 | a local coding agent writes a title, a summary, and image descriptions | your own subscription | only when `enrich.describe = true` |
+
+Tier 2 is the part that matters. The model is never asked to write anything. It is
+asked to pick a name from a list you wrote, and a probability comes back with it.
+That is measurable, predictable, and cacheable. Measured against the gateway: 565
+ms and $0.0000196 for three questions on one item, 466 tokens in and 83 out.
+
+A hundred thousand bookmarks with the default switches costs about two dollars and
+about three hours. Turning on `describe` makes it as expensive as whatever your
+agent costs, which is why it is off unless asked for.
+
+## Install
+
+```sh
+git clone https://github.com/WhiteHades/mebookmarker
+cd mebookmarker
+cargo build --release
+install -m755 target/release/mbm ~/.local/bin/
 ```
 
-The setup wizard will:
-- Create required directories
-- Guide you through getting Twitter credentials
-- Create your config file
+Rust 1.88 or newer. The only external programs it may call are `opencode`,
+`codex`, or `claude`, and only when the describe stage is on.
 
-## Manually Getting Twitter Credentials
+## Getting started
 
-Smaug uses the bird CLI which needs your Twitter session cookies.
+Nothing needs configuring. This works on a machine that has never run it:
 
-If you don't want to use the wizard to make it easy, you can manually put your session info into the config.
-
-1. Copy the example config:
-   ```bash
-   cp smaug.config.example.json smaug.config.json
-   ```
-2. Open Twitter/X in your browser
-3. Open Developer Tools → Application → Cookies
-4. Find and copy these values:
-   - `auth_token`
-   - `ct0`
-5. Add them to your `smaug.config.json`:
-
-```json
-{
-  "twitter": {
-    "authToken": "your_auth_token_here",
-    "ct0": "your_ct0_here"
-  }
-}
+```sh
+mbm add https://www.sqlite.org/wal.html -t databases -n "the write-ahead log, finally understood"
+mbm enrich -s entities
+mbm search wal
+mbm tui
 ```
 
-> **Note:** `smaug.config.json` is gitignored to prevent accidentally committing credentials. The example file is tracked instead.
+The store lands in `$XDG_DATA_HOME/mebookmarker/mebookmarker.db`. `mbm config
+init` writes a `mebookmarker.toml` next to it with every key and its default.
 
-## What Smaug Actually Does
+## Sources
 
-1. **Fetches bookmarks** from Twitter/X using the bird CLI (can also fetch likes, or both)
-2. **Expands t.co links** to reveal actual URLs
-3. **Extracts content** from linked pages:
-   - GitHub repos (via API: stars, description, README)
-   - External articles (title, author, content)
-   - X/Twitter long-form articles (full content via bird CLI)
-   - Quote tweets and reply threads (full context)
-4. **Invokes Claude Code** to analyze and categorize each tweet
-5. **Saves to markdown** organized by date with rich context
-6. **Files to knowledge library** - GitHub repos to `knowledge/tools/`, articles to `knowledge/articles/`
+Every source is one adapter behind the same port, and each one can be checked
+before it runs.
 
-## Running Manually
+| source | what it reads | needs |
+|--------|---------------|-------|
+| `x` | bookmarks, through x's own graphql endpoint | `auth_token` and `ct0` cookies |
+| `x-bird` | the same, by shelling out to [`bird`](https://github.com/steipete/bird) | `bird` on the path |
+| `reddit` | a subreddit's posts | a descriptive user agent |
+| `hackernews` | stories, comments, ask hn, show hn | nothing |
+| `github` | your stars | a token |
+| `rss` | any feed, rss 2.0, rdf, or atom | nothing |
+| `youtube` | a playlist | nothing |
+| `json` | any of five exporter shapes | nothing |
+| `opml` | a feed reader's subscriptions | nothing |
+| `browser` | a netscape or html bookmark export | nothing |
+| `local` | a folder of markdown, text, html, and opml | nothing |
 
-```bash
-# Full job (fetch + process with Claude)
-npx smaug run
+A `mebookmarker.toml` with two sources:
 
-# Fetch from bookmarks (default)
-npx smaug fetch 20
+```toml
+[[sources]]
+medium = "rss"
+enabled = true
 
-# Fetch ALL bookmarks (paginated - requires bird CLI from git)
-npx smaug fetch --all
-npx smaug fetch --all --max-pages 5  # Limit to 5 pages
+[sources.options]
+urls = ["https://blog.rust-lang.org/feed.xml", "https://simonwillison.net/atom/everything/"]
 
-# Fetch from likes instead
-npx smaug fetch --source likes
+[[sources]]
+medium = "hackernews"
+enabled = true
 
-# Fetch from both bookmarks AND likes
-npx smaug fetch --source both
-
-# Process already-fetched tweets
-npx smaug process
-
-# Force re-process (ignore duplicates)
-npx smaug process --force
-
-# Check what's pending
-node -e "console.log(require('./.state/pending-bookmarks.json').count)"
+[sources.options]
+tag = "show_hn"
 ```
 
-### Fetching All Bookmarks
+Secrets are named, never stored. The config says which environment variable holds
+a value, so the file stays safe to keep in a dotfiles repository:
 
-By default, Twitter's API returns ~50-70 bookmarks per request. To fetch more, use the `--all` flag which enables pagination:
-
-```bash
-npx smaug fetch --all              # Fetch all (up to 10 pages)
-npx smaug fetch --all --max-pages 20  # Fetch up to 20 pages
+```sh
+export TWITTER_COOKIES="$(pbpaste)"     # a cookie jar, or `name=value` lines
+export GITHUB_TOKEN=ghp_...
+export AI_GATEWAY_API_KEY=vck_...
 ```
 
-**Note:** This requires bird CLI built from git (not the npm release). See [Troubleshooting](#troubleshooting) for installation instructions.
+## Enrichment
 
-**Cost warning:** Processing large bookmark backlogs can consume significant Claude tokens. Each bookmark with content-heavy links (long articles, GitHub READMEs, etc.) adds to the context. Process in batches to control costs:
+Five stages, in the order that makes a run cheap. Each one keeps its own
+timestamp on the row, so a run that dies half way leaves the rows it finished
+stamped and the rows it did not untouched. There is no queue to lose and no
+checkpoint file to go stale.
 
-```bash
-npx smaug run --limit 50 -t    # Process 50 at a time with token tracking
+| stage | what it does | tier |
+|-------|--------------|------|
+| `entities` | links, mentions, hashtags, paywall marks, fingerprints | 1 |
+| `vision` | alt text, and one `boolean` question about whether an image needs describing | 1–2 |
+| `tags` | one `choice` question against the tag vocabulary | 2 |
+| `categorize` | taxonomy rules first, then one `choice` question | 2 |
+| `describe` | a title and a summary, written by a local agent | 3 |
+
+```sh
+mbm enrich                       # everything the config enables
+mbm enrich -s entities -n 500     # one stage, five hundred rows
+mbm enrich --status              # what is waiting
+mbm enrich --redo tags           # put every bookmark back in that queue
 ```
 
-Use the `-t` flag to monitor usage. See [Token Usage Tracking](#token-usage-tracking) for cost estimates by model.
-
-## Categories
-
-Categories define how different bookmark types are handled. Smaug comes with sensible defaults, but you can customize them in `smaug.config.json`.
-
-### Default Categories
-
-| Category | Matches | Action | Destination |
-|----------|---------|--------|-------------|
-| **github** | github.com | file | `./knowledge/tools/` |
-| **article** | medium.com, substack.com, dev.to, blogs | file | `./knowledge/articles/` |
-| **x-article** | x.com/i/article/* | file | `./knowledge/articles/` |
-| **tweet** | (fallback) | capture | bookmarks.md only |
-
-🔜 _Note: Transcription is flagged but not yet automated. PRs welcome!_
-
-### X/Twitter Long-Form Articles
-
-X articles (`x.com/i/article/*`) are Twitter's native long-form content format. Smaug extracts the full article text using bird CLI:
-
-1. **Direct extraction**: If the bookmarked tweet is the article author's original post, content is extracted directly
-2. **Search fallback**: If you bookmark someone sharing/quoting an article, Smaug searches for the original author's tweet and extracts the full content from there
-3. **Metadata fallback**: If search fails, basic metadata (title, description) is captured
-
-Example X article bookmark:
-```markdown
-## @joaomdmoura - Lessons From 2 Billion Agentic Workflows
-> [Full article content extracted]
-
-- **Tweet:** https://x.com/joaomdmoura/status/123456789
-- **Link:** https://x.com/i/article/987654321
-- **Filed:** [lessons-from-2-billion-agentic-workflows.md](./knowledge/articles/lessons-from-2-billion-agentic-workflows.md)
-- **What:** Deep dive into patterns from scaling CrewAI to billions of agent executions.
-```
-
-### Actions
-
-- **file**: Create a separate markdown file with rich metadata
-- **capture**: Add to bookmarks.md only (no separate file)
-- **transcribe**: Flag for future transcription *(auto-transcription coming soon! PRs welcome)*
-
-### Custom Categories
-
-Add your own categories in `smaug.config.json`:
-
-```json
-{
-  "categories": {
-    "research": {
-      "match": ["arxiv.org", "papers.", "scholar.google"],
-      "action": "file",
-      "folder": "./knowledge/research",
-      "template": "article",
-      "description": "Academic papers"
-    },
-    "newsletter": {
-      "match": ["buttondown.email", "beehiiv.com"],
-      "action": "file",
-      "folder": "./knowledge/newsletters",
-      "template": "article",
-      "description": "Newsletter issues"
-    }
-  }
-}
-```
-
-Your custom categories merge with the defaults. To override a default, use the same key (e.g., `github`, `article`).
-
-## Bookmark Folders
-
-If you've organized your Twitter bookmarks into folders, Smaug can preserve that organization as tags. Configure folder IDs mapped to tag names:
-
-```json
-{
-  "folders": {
-    "1234567890": "ai-tools",
-    "0987654321": "articles-to-read",
-    "1122334455": "research"
-  }
-}
-```
-
-**How to find folder IDs:**
-1. Open Twitter/X and go to your bookmarks
-2. Click on a folder
-3. The URL will be `https://x.com/i/bookmarks/1234567890` - the number is the folder ID
-
-When folders are configured:
-- Smaug fetches from each folder separately
-- Each bookmark gets tagged with its folder name
-- Tags appear in `bookmarks.md` entries and knowledge file frontmatter
-
-**Note:** Twitter's API doesn't return folder membership when fetching all bookmarks at once, so Smaug must fetch each folder individually.
-
-## Automation
-
-Run Smaug automatically every 30 minutes:
-
-### Option A: PM2 (recommended)
-
-```bash
-npm install -g pm2
-pm2 start "npx smaug run" --cron "*/30 * * * *" --name smaug
-pm2 save
-pm2 startup    # Start on boot
-```
-
-### Option B: Cron
-
-```bash
-crontab -e
-# Add:
-*/30 * * * * cd /path/to/smaug && npx smaug run >> smaug.log 2>&1
-```
-
-### Option C: systemd
-
-```bash
-# Create /etc/systemd/system/smaug.service
-# See docs/systemd-setup.md for details
-```
+`--redo` is how a new taxonomy gets applied to an archive that already exists:
+clear the column, run the stage, and every row goes through it again.
 
 ## Output
 
-### bookmarks.md
+Eight formats, all of them pure — a sink takes bookmarks and produces bytes.
 
-Your bookmarks organized by date:
+| format | shape | good for |
+|--------|-------|----------|
+| `markdown` | one note per bookmark, plus a daily index | reading, and git |
+| `obsidian` | the same, with frontmatter and wikilinks | an obsidian vault |
+| `html` | one file, with a filter box, no javascript libraries | opening it anywhere |
+| `csv` | one row per bookmark, a fixed column set | a spreadsheet |
+| `jsonl` | one bookmark per line | the archive copy |
+| `json` | one document | the archive copy, readable |
+| `opml` | a folder tree | a feed reader |
+| `archive` | the raw source payload, one file per item | re-parsing later |
 
-```markdown
-# Thursday, January 2, 2026
+```sh
+mbm export                                    # the configured sinks
+mbm export -f obsidian -o ~/vault/marks       # one of them, somewhere else
+```
 
-## @simonw - Gist Host Fork for Rendering GitHub Gists
-> I forked the wonderful gistpreview.github.io to create gisthost.github.io
+The `archive` format is the one worth keeping a copy of. It is not a rendering,
+it is the bytes a source gave us, so a later version can re-parse an item with a
+better parser and get back the item it would have produced.
 
-- **Tweet:** https://x.com/simonw/status/123456789
-- **Link:** https://gisthost.github.io/
-- **Filed:** [gisthost-gist-rendering.md](./knowledge/articles/gisthost-gist-rendering.md)
-- **What:** Free GitHub Pages-hosted tool that renders HTML files from Gists.
+## Search
+
+BM25 and a SimHash-LSH fuzzy pass, fused with reciprocal rank fusion, with
+AND-then-OR semantics: a query with several words prefers items matching all of
+them but never hides the ones matching some. A bigram bitset prefilter rejects
+most of the index before FTS5 is asked anything.
+
+```sh
+mbm search "wal journal"                     # hybrid, the default
+mbm search --rank exact "sqlite internals"   # bm25 only
+mbm search --rank fuzzy "sqtlite"            # typo-tolerant
+mbm search --json wal | jq '.[].url'         # for a script
+```
+
+`tab` cycles the mode in the terminal interface, because a half-typed word wants
+fuzzy and a finished one does not.
+
+## The terminal interface
+
+```sh
+mbm tui
+```
+
+Four views over one list: browse, search, detail, and tags. Everything is on the
+keyboard, `f2` tags the selected item, `u` puts back whatever you just deleted,
+and the status line always says what the last action did.
+
+## Command line
+
+```
+mbm add <url>...       save urls
+mbm import <path>      read a file or a folder
+mbm run                fetch, enrich, export
+mbm search <query>     search
+mbm show <id>          print one bookmark as json
+mbm list               list the archive
+mbm tag <id> <tag>     add or remove a tag by hand
+mbm delete <id>        remove a bookmark
+mbm stats              counts by medium, tag, and stage
+mbm export             write the archive out
+mbm enrich             run the enrichment stages
+mbm config             read and write the configuration
+mbm tui                the interactive browser
+```
+
+Exit codes are worth knowing about in a cron job: `0` success, `1` a failure
+worth reading, `2` a credential or configuration problem that retrying will not
+fix, `3` a rate limit or a transient failure that will.
+
+## Where things live
+
+| what | where |
+|------|-------|
+| the store | `$XDG_DATA_HOME/mebookmarker/mebookmarker.db` |
+| the config | `$XDG_DATA_HOME/mebookmarker/mebookmarker.toml` |
+| agent state | `~/.local/share/opencode`, `~/.codex`, `~/.claude` |
+
+## How it is built
+
+Nine crates, layered so each one is testable without the ones above it.
+
+```
+mbm-core     the domain: a bookmark, a taxonomy, a compiled matcher, the three ports
+mbm-store    sqlite: schema, fts5, simhash, lsh, the prefilter, rrf search
+mbm-extract  http with backoff, readability, link classification, oembed
+mbm-jev      the gateway client, typed questions, cost accounting
+mbm-ingest   one adapter per source
+mbm-enrich   the five stages and the resumable pipeline
+mbm-agent    drivers for opencode, codex, and claude
+mbm-sink     the eight output formats
+mbm-app      config, pipeline, cli, tui
+```
+
+Some things that were measured rather than assumed, and are commented where they
+live so the next person does not re-run the experiment:
+
+- **no FTS5 prefix index.** it costs 30% more space and turns a rare two-letter
+  stem from 0.06 ms into 41 ms. the prefilter serves as-you-type instead.
+- **no cap-then-rank.** bm25 returns `-0.0` without a `MATCH`, so the "fast"
+  version was fast because it was wrong. the correct one is 1200 ms and correct.
+- **no hand-written AVX2 case folding.** 0.11× against `to_ascii_lowercase`,
+  measured, deleted.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
 
 ---
 
-## @tom_doerr - Whisper-Flow Real-time Transcription
-> This is amazing - real-time transcription with Whisper
-
-- **Tweet:** https://x.com/tom_doerr/status/987654321
-- **Link:** https://github.com/dimastatz/whisper-flow
-- **Filed:** [whisper-flow.md](./knowledge/tools/whisper-flow.md)
-- **What:** Real-time speech-to-text using OpenAI Whisper with streaming support.
-```
-
-### knowledge/tools/*.md
-
-GitHub repos get their own files:
-
-```markdown
----
-title: "whisper-flow"
-type: tool
-date_added: 2026-01-02
-source: "https://github.com/dimastatz/whisper-flow"
-tags: [ai, transcription, whisper, streaming]
-via: "Twitter bookmark from @tom_doerr"
----
-
-Real-time speech-to-text transcription using OpenAI Whisper...
-
-## Key Features
-- Streaming audio input
-- Multiple language support
-- Low latency output
-
-## Links
-- [GitHub](https://github.com/dimastatz/whisper-flow)
-- [Original Tweet](https://x.com/tom_doerr/status/987654321)
-```
-
-## Configuration
-
-Copy the example config and customize:
-
-```bash
-cp smaug.config.example.json smaug.config.json
-```
-
-Example `smaug.config.json`:
-
-```json
-{
-  "source": "bookmarks",
-  "archiveFile": "./bookmarks.md",
-  "pendingFile": "./.state/pending-bookmarks.json",
-  "stateFile": "./.state/bookmarks-state.json",
-  "timezone": "America/New_York",
-  "twitter": {
-    "authToken": "your_auth_token",
-    "ct0": "your_ct0"
-  },
-  "autoInvokeClaude": true,
-  "claudeModel": "sonnet",
-  "claudeTimeout": 900000,
-  "allowedTools": "Read,Write,Edit,Glob,Grep,Bash,Task,TodoWrite",
-  "webhookUrl": null,
-  "webhookType": "discord"
-}
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `source` | `bookmarks` | What to fetch: `bookmarks` (default), `likes`, or `both` |
-| `includeMedia` | `false` | **EXPERIMENTAL**: Include media attachments (photos, videos, GIFs) |
-| `archiveFile` | `./bookmarks.md` | Main archive file |
-| `timezone` | `America/New_York` | For date formatting |
-| `cliTool` | `claude` | AI CLI to use: `claude` or `opencode` |
-| `autoInvokeClaude` | `true` | Auto-run Claude Code for analysis |
-| `claudeModel` | `sonnet` | Model to use (`sonnet`, `haiku`, or `opus`) |
-| `autoInvokeOpencode` | `true` | Auto-run OpenCode for analysis |
-| `opencodeModel` | `opencode/glm-4.7-free` | OpenCode model (see OpenCode docs) |
-| `claudeTimeout` | `900000` | Max processing time (15 min) |
-| `parallelThreshold` | `8` | Min bookmarks before parallel processing kicks in |
-| `webhookUrl` | `null` | Discord/Slack webhook for notifications |
-
-Environment variables also work: `AUTH_TOKEN`, `CT0`, `SOURCE`, `INCLUDE_MEDIA`, `ARCHIVE_FILE`, `TIMEZONE`, `CLI_TOOL`, `CLAUDE_MODEL`, `OPENCODE_MODEL`, etc.
-
-### Experimental: Media Attachments
-
-Media extraction (photos, videos, GIFs) is available but disabled by default. To enable:
-
-```bash
-# One-time with flag
-npx smaug fetch --media
-
-# Or in config
-{
-  "includeMedia": true
-}
-```
-
-When enabled, the `media[]` array is included in the pending JSON with:
-- `type`: "photo", "video", or "animated_gif"
-- `url`: Full-size media URL
-- `previewUrl`: Thumbnail (smaller, faster)
-- `width`, `height`: Dimensions
-- `videoUrl`, `durationMs`: For videos only
-
-⚠️ **Why experimental?**
-1. **Requires bird with media support** - PR [#14](https://github.com/steipete/bird/pull/14) adds media extraction. Until merged, you'll need a fork with this PR or wait for an upstream release. Without it, `--media` is a no-op (empty array).
-2. **Workflow still being refined** - Short screengrabs (< 30s) don't need transcripts, but longer videos might. We're still figuring out the best handling.
-
-## AI CLI Integration
-
-Smaug supports multiple AI CLI tools for intelligent bookmark processing:
-
-- **Claude Code** (default) - Anthropic's Claude CLI
-- **OpenCode** - Alternative AI CLI with support for multiple models
-
-### Using OpenCode (Alternative to Claude)
-
-To use OpenCode instead of Claude Code:
-
-```json
-{
-  "cliTool": "opencode",
-  "opencodeModel": "opencode/glm-4.7-free",
-  "autoInvokeOpencode": true
-}
-```
-
-Available OpenCode models include:
-- `opencode/glm-4.7-free` (free tier)
-- `opencode/kimi-k2.5-free` (free tier)
-- `opencode/claude-sonnet-4-5` (Claude via OpenCode)
-- `opencode/gpt-5.2` (GPT via OpenCode)
-
-Set via environment variable:
-```bash
-export CLI_TOOL=opencode
-export OPENCODE_MODEL=opencode/kimi-k2.5-free
-```
-
-### Claude Code Integration
-
-Smaug uses Claude Code by default for intelligent bookmark processing. The `.claude/commands/process-bookmarks.md` file contains instructions for:
-
-- Generating descriptive titles (not generic "Article" or "Tweet")
-- Filing GitHub repos to `knowledge/tools/`
-- Filing articles to `knowledge/articles/`
-- Handling quote tweets with full context
-- Processing reply threads with parent context
-- Parallel processing for large batches (configurable threshold, default 8 bookmarks)
-
-You can also run processing manually:
-
-```bash
-claude
-> Run /process-bookmarks
-```
-
-### Token Usage Tracking
-
-Track your API costs with the `-t` flag:
-
-```bash
-npx smaug run -t
-# or
-npx smaug run --track-tokens
-```
-
-This displays a breakdown at the end of each run:
-
-```
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📊 TOKEN USAGE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Main (sonnet):
-  Input:               85 tokens  <$0.01
-  Output:           5,327 tokens  $0.08
-  Cache Read:     724,991 tokens  $0.22
-  Cache Write:     62,233 tokens  $0.23
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-💰 TOTAL COST: $0.53
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-```
-
-### Cost Optimization: Haiku Subagents
-
-For large batches (8+ bookmarks by default), Smaug spawns parallel subagents. By default, these use Haiku instead of Sonnet, which cuts costs nearly in half:
-
-| Configuration | 20 Bookmarks | Time |
-|---------------|--------------|------|
-| Sonnet subagents | $1.00 | 4m 12s |
-| **Haiku subagents** | **$0.53** | 4m 18s |
-
-Same speed, ~50% cheaper. The categorization and filing tasks don't require Sonnet-level reasoning, so Haiku handles them well.
-
-This is configured in `.claude/commands/process-bookmarks.md` with `model="haiku"` in the Task calls.
-
-## Troubleshooting
-
-### "No new bookmarks to process"
-
-This means either:
-1. No bookmarks were fetched (check bird CLI credentials)
-2. All fetched bookmarks already exist in `bookmarks.md`
-
-To start fresh:
-```bash
-rm -rf .state/ bookmarks.md knowledge/
-mkdir -p .state knowledge/tools knowledge/articles
-npx smaug run
-```
-
-### Bird CLI 403 errors
-
-Your Twitter cookies may have expired. Get fresh ones from your browser.
-
-### Processing is slow
-
-- Try `haiku` model instead of `sonnet` in config for faster (but less thorough) processing
-- Make sure you're not re-processing with `--force` (causes edits instead of appends)
-
-### Only ~50-70 bookmarks fetched
-
-The npm release of bird CLI (v0.5.1) doesn't support pagination. To fetch all bookmarks, install bird from git:
-
-```bash
-# Clone and build bird from source
-cd /tmp
-git clone https://github.com/steipete/bird.git
-cd bird
-pnpm install    # or: npm install -g pnpm && pnpm install
-pnpm run build:dist
-
-# Link globally (may need sudo or --force)
-npm link --force
-
-# Verify
-bird --version  # Should show a newer commit hash
-bird bookmarks --help  # Should show --all flag
-```
-
-Then use `npx smaug fetch --all` to fetch all bookmarks with pagination.
-
-## Credits
-
-- [bird CLI](https://github.com/steipete/bird) by Peter Steinberger
-- Built with Claude Code
-
-## License
-
-MIT
+A rewrite of [smaug](https://github.com/WhiteHades/smaug), which was MIT and is
+credited in the licence file.
