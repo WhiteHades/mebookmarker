@@ -48,7 +48,8 @@ impl std::fmt::Display for Layer {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-// grouped by what the caller should do, not by which crate raised it.
+// grouped by what the caller should do about them, so one match covers a
+// whole pipeline stage.
 pub enum Class {
     Permanent,
 

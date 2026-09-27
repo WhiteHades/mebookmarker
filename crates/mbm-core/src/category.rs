@@ -121,8 +121,8 @@ impl CategoryRule {
     }
 
     #[must_use]
-    pub fn matches(&self, target: &str) -> bool {    // strips scheme, query, and fragment first, so `github.com` cannot be
-    // tripped by `example.com/x?ref=github.com`
+    pub fn matches(&self, target: &str) -> bool {    // strips scheme, query, and fragment first, so a pattern matches the host
+    // and path only
 
         if self.match_any.is_empty() {
             return false;
@@ -132,11 +132,11 @@ impl CategoryRule {
             .split_once("://")
             .map_or(target.trim(), |(_, rest)| rest);
         let host_and_path = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
-        let haystack = host_and_path.to_ascii_lowercase();
-        if !self.match_any.iter().any(|p| haystack.contains(p.as_str())) {
+        let folded = host_and_path.to_ascii_lowercase();
+        if !self.match_any.iter().any(|p| folded.contains(p.as_str())) {
             return false;
         }
-        self.match_all.iter().all(|p| haystack.contains(p.as_str()))
+        self.match_all.iter().all(|p| folded.contains(p.as_str()))
     }
 }
 

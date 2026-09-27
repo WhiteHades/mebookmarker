@@ -3,10 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::atomic::{AtomicU16, Ordering};
 
-// high 48 bits are unix millis, low 16 are a per-process counter. integer
-// order is time order, so a pipeline cursor is just `where id > ?` on the
-// primary key. uuidv7 would sort too but needs a bytewise compare, and a
-// plain rowid carries no time at all.
+// the high 48 bits are unix millis and the low 16 are a per-process counter,
+// which makes integer order the same as time order. a pipeline cursor is then
+// `where id > ?` on the primary key: a contiguous range scan with no sort.
 pub const MBM_EPOCH_MS: u64 = 1_577_836_800_000;
 
 const SEQUENCE_SPACE: u64 = 1 << 16;

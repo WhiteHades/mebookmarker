@@ -1217,6 +1217,7 @@ name = "mbm-core"
 version = "1.0.0"
 dependencies = [
  "ahash",
+ "aho-corasick",
  "async-trait",
  "jiff",
  "serde",
