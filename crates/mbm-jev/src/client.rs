@@ -311,8 +311,11 @@ pub struct Jev {
 
 impl std::fmt::Debug for Jev {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // the api key never appears in a log line
-        f.debug_struct("Jev").field("endpoint", &self.endpoint).field("model", &self.model).finish()
+        // the api key is deliberately left out of every log line
+        f.debug_struct("Jev")
+            .field("endpoint", &self.endpoint)
+            .field("model", &self.model)
+            .finish_non_exhaustive()
     }
 }
 
@@ -379,7 +382,7 @@ impl Jev {
             .json(&body)
             .send()
             .await
-            .map_err(map_send_error)?;
+            .map_err(|e| map_send_error(&e))?;
 
         let status = response.status();
         if !status.is_success() {
@@ -406,7 +409,7 @@ impl Jev {
 }
 
 /// turn a transport failure into something the pipeline can act on.
-fn map_send_error(e: reqwest::Error) -> Error {
+fn map_send_error(e: &reqwest::Error) -> Error {
     if e.is_timeout() {
         return Error::Timeout(TIMEOUT);
     }
@@ -531,7 +534,7 @@ mod tests {
                 "providerMetadata":{"gateway":{"cost":"0.000011508","marketCost":"0.000011508"}}}"#,
         )
         .unwrap();
-        assert_eq!(response.cost_usd(), Some(0.000011508));
+        assert_eq!(response.cost_usd(), Some(0.000_011_508));
         assert_eq!(response.cost_micros(), Some(1_151));
     }
 

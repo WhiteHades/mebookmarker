@@ -106,7 +106,6 @@ impl Question {
             return Err("a question needs instructions".to_owned());
         }
         match self {
-            Self::Boolean { .. } => Ok(()),
             Self::Choice { criteria, .. } if criteria.is_empty() => {
                 Err("a choice question needs at least one option".to_owned())
             }
@@ -114,16 +113,17 @@ impl Question {
                 "a choice question allows {MAX_CHOICE_OPTIONS} options, got {}",
                 criteria.len()
             )),
-            Self::Choice { .. } => Ok(()),
-            Self::Score { criteria, .. } if criteria.len() < MIN_SCORE_LEVELS => Err(format!(
-                "a score question needs at least {MIN_SCORE_LEVELS} rungs, got {}",
-                criteria.len()
-            )),
-            Self::Score { criteria, .. } if criteria.len() > MAX_SCORE_LEVELS => Err(format!(
-                "a score question allows {MAX_SCORE_LEVELS} rungs, got {}",
-                criteria.len()
-            )),
-            Self::Score { .. } => Ok(()),
+            Self::Score { criteria, .. } if !(MIN_SCORE_LEVELS..=MAX_SCORE_LEVELS)
+                .contains(&criteria.len()) =>
+            {
+                Err(format!(
+                    "a score question needs {MIN_SCORE_LEVELS} to {MAX_SCORE_LEVELS} rungs, got {}",
+                    criteria.len()
+                ))
+            }
+            // a boolean always validates once it has instructions, and a
+            // choice or score is fine once its bounds check out
+            Self::Boolean { .. } | Self::Choice { .. } | Self::Score { .. } => Ok(()),
         }
     }
 
