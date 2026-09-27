@@ -199,6 +199,31 @@ impl Http {
         Self::new(concat!("mebookmarker/", env!("CARGO_PKG_VERSION")), 32)
     }
 
+    /// change how many times a transient failure is retried.
+    #[must_use]
+    pub fn with_retries(mut self, retries: u32) -> Self {
+        self.retries = retries;
+        self
+    }
+
+    /// change the per-request timeout.
+    ///
+    /// rebuilds the client, because reqwest fixes the timeout at build time.
+    /// this is called once at startup and never again.
+    pub fn with_timeout(&self, timeout: Duration) -> Result<Self> {
+        let mut out = Self::new(&self.user_agent, self.concurrency)?;
+        out.retries = self.retries;
+        out.client = reqwest::Client::builder()
+            .user_agent(&self.user_agent)
+            .pool_max_idle_per_host(self.concurrency.max(4))
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::limited(8))
+            .build()
+            .map_err(|e| Error::Http(format!("cannot build the client: {e}")))?;
+        Ok(out)
+    }
+
     /// how many requests may be in flight at once.
     #[must_use]
     pub fn concurrency(&self) -> usize {

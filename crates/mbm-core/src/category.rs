@@ -157,6 +157,49 @@ fn default_fallback() -> String {
 }
 
 impl Taxonomy {
+    /// the taxonomy a fresh install starts with.
+    ///
+    /// a starter set rather than an empty one, for two reasons. a person opening
+    /// the config sees what a category actually is, which is the fastest way to
+    /// make them write their own. and the rules work on the first run, so
+    /// `github.com` is filed under engineering before anyone has edited
+    /// anything.
+    #[must_use]
+    pub fn default_taxonomy() -> Self {
+        let mut taxonomy = Self::empty();
+        for (slug, name, color, description) in [
+            ("engineering", "Engineering", "#4f46e5", "code, tools, and systems"),
+            ("reading", "Reading", "#0891b2", "things to read later"),
+            ("writing", "Writing", "#7c3aed", "things being written"),
+            ("design", "Design", "#db2777", "interfaces, type, and craft"),
+            ("business", "Business", "#ca8a04", "markets, companies, and money"),
+            ("science", "Science", "#16a34a", "research and findings"),
+            ("news", "News", "#dc2626", "what happened"),
+            ("media", "Media", "#ea580c", "video, audio, and pictures"),
+        ] {
+            taxonomy.insert(Category::new(slug, name, color, description));
+        }
+        taxonomy.insert(Category::new("general", "General", "#6b7280", "everything else"));
+
+        for (slug, needles) in [
+            ("engineering", vec!["github.com", "gitlab.com", "arxiv.org", "docs.rs", "crates.io", "developer.mozilla.org", "stackoverflow.com"]),
+            ("design", vec!["figma.com", "dribbble.com", "awwwards.com", "fonts.google.com", "typewolf.com"]),
+            ("business", vec!["substack.com", "stripe.com", "a16z.com", "bloomberg.com"]),
+            ("science", vec!["nature.com", "science.org", "arxiv.org", "quantamagazine.org", "nasa.gov"]),
+            ("news", vec!["reuters.com", "apnews.com", "bbc.com", "theverge.com", "arstechnica.com"]),
+            ("media", vec!["youtube.com", "youtu.be", "vimeo.com", "spotify.com", "twitch.tv"]),
+            ("reading", vec!["readwise.io", "pocket.com", "instapaper.com"]),
+        ] {
+            taxonomy.rules.push(CategoryRule {
+                slug: slug.to_owned(),
+                match_all: Vec::new(),
+                match_any: needles.into_iter().map(str::to_owned).collect(),
+                action: None,
+            });
+        }
+        taxonomy
+    }
+
     #[must_use]
     pub fn empty() -> Self {
         Self {

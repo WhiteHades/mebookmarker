@@ -229,6 +229,25 @@ pub enum LinkKind {
 }
 
 impl LinkKind {
+    /// the stored name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Repository => "repository",
+            Self::Article => "article",
+            Self::LongForm => "long-form",
+            Self::Video => "video",
+            Self::Podcast => "podcast",
+            Self::Post => "post",
+            Self::Image => "image",
+            Self::Thread => "thread",
+            Self::Paper => "paper",
+            Self::Product => "product",
+            Self::Release => "release",
+            Self::Unknown => "unknown",
+        }
+    }
+
     #[must_use]
     pub const fn worth_extracting(self) -> bool {
         match self {

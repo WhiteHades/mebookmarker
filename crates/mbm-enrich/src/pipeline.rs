@@ -144,6 +144,37 @@ impl Plan {
         self.limit = limit;
         self
     }
+
+    /// drop one stage from the plan.
+    #[must_use]
+    pub fn without(self, stage: EnrichStage) -> Self {
+        Self {
+            stages: self.stages.into_iter().filter(|s| s.stage() != stage).collect(),
+            page: self.page,
+            limit: self.limit,
+        }
+    }
+
+    /// keep only the named stages.
+    #[must_use]
+    pub fn only(self, wanted: &[EnrichStage]) -> Self {
+        Self {
+            stages: self.stages.into_iter().filter(|s| wanted.contains(&s.stage())).collect(),
+            page: self.page,
+            limit: self.limit,
+        }
+    }
+}
+
+impl Default for Plan {
+    /// the plan that runs the free stage and nothing else.
+    ///
+    /// this is what a caller gets when it cannot build the remote stages, which
+    /// is what happens with no gateway key. the free stage needs nothing, so it
+    /// is the one that always runs.
+    fn default() -> Self {
+        Self::new(vec![Arc::new(Entities::new())])
+    }
 }
 
 /// run a plan over everything waiting, in one transaction per page.

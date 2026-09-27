@@ -119,6 +119,12 @@ impl CompiledTaxonomy {
         )
     }
 
+    /// the slug a url falls back to when no rule claims it.
+    #[must_use]
+    pub fn fallback(&self) -> &str {
+        &self.fallback
+    }
+
     /// every category this url matches, in rule order.
     ///
     /// cheaper than calling [`route`](Self::route) for each candidate

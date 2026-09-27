@@ -430,8 +430,8 @@ impl X {
 
     /// shell out to `bird` instead of calling graphql directly.
     #[must_use]
-    pub fn via_bird(mut self) -> Self {
-        self.use_bird = true;
+    pub fn via_bird_if(mut self, use_bird: bool) -> Self {
+        self.use_bird = use_bird;
         self
     }
 }
