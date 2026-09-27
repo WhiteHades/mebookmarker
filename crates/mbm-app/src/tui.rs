@@ -109,12 +109,16 @@ pub enum Action {
 pub fn action_for(event: &crossterm::event::KeyEvent) -> Action {
     use crossterm::event::{KeyCode, KeyModifiers};
 
+    // every unmodified key is a character for the search box, so the commands
+    // live on ctrl, where there are twenty-six of them and one is in use
     if event.modifiers.contains(KeyModifiers::CONTROL) {
         return match event.code {
             KeyCode::Char('c') => Action::Quit,
             KeyCode::Char('u') => Action::Clear,
             KeyCode::Char('r') => Action::Refresh,
             KeyCode::Char('z') => Action::Undo,
+            KeyCode::Char('g') => Action::Tags,
+            KeyCode::Char('d') => Action::Delete,
             _ => Action::None,
         };
     }
@@ -218,6 +222,21 @@ impl App {
         self.items.is_empty()
     }
 
+    /// the label the list frame shows.
+    ///
+    /// a filtered list is a search however it got there, so the label follows
+    /// the query rather than the enum.
+    #[must_use]
+    pub fn list_label(&self) -> String {
+        if self.view == View::Tags {
+            return self.view.label().to_owned();
+        }
+        if self.query.trim().is_empty() {
+            return self.view.label().to_owned();
+        }
+        format!("search · {}", mode_label(self.mode))
+    }
+
     /// the selected item.
     #[must_use]
     pub fn selected_item(&self) -> Option<&Bookmark> {
@@ -230,9 +249,17 @@ impl App {
         let limit = 500usize;
 
         self.items = if self.query.trim().is_empty() {
+            // `list` reads the row and nothing else, which is right for a
+            // count and wrong for a screen: a list row shows the author and the
+            // tags, and a detail view shows the links
             let repo = Repo::new(&conn);
             repo.list(limit, 0)
-                .map(|items| items.into_iter().map(|b| (b, 0.0)).collect())
+                .map(|mut items| {
+                    for item in &mut items {
+                        let _ = repo.load_satellites(item);
+                    }
+                    items.into_iter().map(|b| (b, 0.0)).collect()
+                })
                 .unwrap_or_default()
         } else {
             mbm_store::Searcher::new(&conn)
@@ -538,7 +565,7 @@ fn draw_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
                     Style::default().fg(style::MUTED),
                 ),
                 Span::styled(
-                    format!("{:<10}", bookmark.source.medium.name()),
+                    format!("{:<13}", bookmark.source.medium.name()),
                     Style::default().fg(style::MUTED),
                 ),
                 Span::raw(mbm_sink::display_title(bookmark)),
@@ -564,7 +591,7 @@ fn draw_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" {} ", app.view.label()))
+                .title(format!(" {} ", app.list_label()))
                 .border_style(Style::default().fg(style::MUTED)),
         )
         .highlight_style(Style::default().bg(style::SELECTED).add_modifier(Modifier::BOLD));
@@ -578,67 +605,78 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let Some(bookmark) = app.selected_item() else {
         return;
     };
-    let mut text = Text::default();
-    text.push_span(Span::styled(
+
+    // an explicit list of lines rather than a `Text` built by appending: a
+    // blank row has to be a real `Line::default()`, and that is the one thing
+    // a string-appending builder makes easy to get wrong
+    let mut lines: Vec<Line<'_>> = Vec::new();
+    let muted = Style::default().fg(style::MUTED);
+
+    lines.push(Line::from(Span::styled(
         mbm_sink::display_title(bookmark),
         Style::default().fg(style::ACCENT).add_modifier(Modifier::BOLD),
-    ));
-    text.push_span(Span::raw(""));
+    )));
+    lines.push(Line::default());
 
+    let mut byline: Vec<Span<'_>> = Vec::new();
     if let Some(when) = bookmark.created_at {
-        text.push_span(Span::styled(mbm_sink::date_time(when), Style::default().fg(style::MUTED)));
+        byline.push(Span::styled(mbm_sink::date_time(when), muted));
     }
     if let Some(author) = &bookmark.author {
-        text.push_span(Span::raw(format!("  @{}", author.handle)));
+        byline.push(Span::raw(format!("  @{}", author.handle)));
     }
-    text.push_span(Span::raw(""));
-
-    if let Some(summary) = mbm_sink::summary_of(bookmark) {
-        text.push_span(Span::raw(summary.to_owned()));
-        text.push_span(Span::raw(""));
+    if let Some(collection) = &bookmark.source.collection {
+        byline.push(Span::styled(format!("  {collection}"), muted));
     }
+    if !byline.is_empty() {
+        lines.push(Line::from(byline));
+    }
+    lines.push(Line::default());
 
     if let Some(url) = &bookmark.url {
-        text.push_span(Span::styled(url.to_string(), Style::default().fg(style::ACCENT)));
-        text.push_span(Span::raw(""));
+        lines.push(Line::from(Span::styled(url.to_string(), Style::default().fg(style::ACCENT))));
+        lines.push(Line::default());
+    }
+
+    if let Some(summary) = mbm_sink::summary_of(bookmark) {
+        lines.push(Line::from(Span::raw(summary.to_owned())));
+        lines.push(Line::default());
     }
 
     for line in bookmark.text.lines() {
-        text.push_span(Span::raw(line.to_owned()));
+        lines.push(Line::from(line.to_owned()));
     }
 
     if !bookmark.links.is_empty() {
-        text.push_span(Span::raw(""));
-        text.push_span(Span::styled("links", Style::default().fg(style::MUTED)));
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled("links", muted)));
         for link in &bookmark.links {
-            let blocked = link.blocked.map(|r| format!("  [{}]", r.name())).unwrap_or_default();
-            text.push_span(Span::raw(format!("  {}{}", link.resolved, blocked)));
+            let blocked =
+                link.blocked.map(|reason| format!("  [{}]", reason.name())).unwrap_or_default();
+            lines.push(Line::from(format!("  {}{}", link.resolved, blocked)));
         }
     }
     if !bookmark.tags.is_empty() {
-        text.push_span(Span::raw(""));
-        text.push_span(Span::styled(
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
             format!("tags: {}", bookmark.tags.iter().cloned().collect::<Vec<_>>().join(" ")),
-            Style::default().fg(style::MUTED),
-        ));
+            muted,
+        )));
     }
     if !bookmark.categories.is_empty() {
-        text.push_span(Span::styled(
+        lines.push(Line::from(Span::styled(
             format!(
                 "in: {}",
                 bookmark.categories.iter().map(|c| c.slug.as_str()).collect::<Vec<_>>().join(" ")
             ),
-            Style::default().fg(style::MUTED),
-        ));
+            muted,
+        )));
     }
-    text.push_span(Span::raw(""));
-    text.push_span(Span::styled(
-        format!("id {}", bookmark.id.get()),
-        Style::default().fg(style::MUTED),
-    ));
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(format!("id {}", bookmark.id.get()), muted)));
 
     frame.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: false }).block(
+        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).block(
             Block::default()
                 .borders(Borders::ALL)
                 .title(" detail — esc to go back ")
@@ -681,15 +719,14 @@ fn draw_tags(frame: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
     let (total, _) = app.totals();
-    let left = format!(
-        "{} items · {} · {}{}",
-        app.items.len(),
-        total,
-        mode_label(app.mode),
-        if app.query.trim().is_empty() { String::new() } else { " · typed".to_owned() },
-    );
+    let shown = if app.items.len() == total {
+        format!("{total} bookmarks")
+    } else {
+        format!("{} of {} bookmarks", app.items.len(), total)
+    };
+    let left = format!("{shown} · {}", mode_label(app.mode));
     let middle = app.status.to_string();
-    let right = "↑↓ move · enter open · tab rank · f2 tag · del remove · u undo · ctrl-c quit";
+    let right = "↑↓ move · enter open · tab rank · f2 tag · ctrl-d remove · ctrl-u undo · ctrl-g tags ·          ctrl-c quit";
 
     let line = Line::from(vec![
         Span::styled(format!(" {left} "), Style::default().fg(style::MUTED)),
@@ -804,8 +841,14 @@ pub fn render_to(width: u16, height: u16, app: &mut App) -> String {
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("a test backend always builds");
     terminal.draw(|frame| draw(frame, app)).expect("drawing into a test backend cannot fail");
-    let buffer = terminal.backend().buffer().clone();
-    buffer.content().iter().map(ratatui::buffer::Cell::symbol).collect::<String>()
+    let buffer = terminal.backend().buffer();
+    let cols = usize::from(width);
+    buffer
+        .content()
+        .chunks(cols)
+        .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// the colours the interface uses, exposed so a test can assert on them.
@@ -962,6 +1005,15 @@ mod tests {
     }
 
     #[test]
+    fn the_tag_view_is_reachable_from_the_keyboard() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = seeded(dir.path());
+        let event = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
+        app.act(action_for(&event));
+        assert_eq!(app.view(), View::Tags, "a query cannot hold `g`, so ctrl-g");
+    }
+
+    #[test]
     fn the_ranking_mode_cycles_and_reloads() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = seeded(dir.path());
@@ -1084,6 +1136,18 @@ mod tests {
     }
 
     #[test]
+    fn the_control_keys_reach_the_views_the_query_cannot() {
+        assert_eq!(
+            action_for(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)),
+            Action::Tags
+        );
+        assert_eq!(
+            action_for(&KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            Action::Delete
+        );
+    }
+
+    #[test]
     fn the_control_keys_are_the_usual_ones() {
         assert_eq!(
             action_for(&KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
@@ -1134,7 +1198,8 @@ mod tests {
         assert!(frame_text.contains("search:"), "{frame_text}");
         assert!(frame_text.contains("browse"), "{frame_text}");
         assert!(frame_text.contains("post 0"), "{frame_text}");
-        assert!(frame_text.contains("items"), "{frame_text}");
+        assert!(frame_text.contains("bookmarks"), "{frame_text}");
+        assert!(frame_text.contains("hybrid"), "the ranking mode is on the status line");
     }
 
     #[test]
@@ -1167,6 +1232,65 @@ mod tests {
     }
 
     #[test]
+    fn the_detail_frame_keeps_each_part_on_its_own_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("t.db")).unwrap();
+        mbm_store::migrate(&conn).unwrap();
+        let mut b = Bookmark::new(
+            mbm_core::bookmark::SourceRef::new(mbm_core::medium::SourceMedium::X, "1", None),
+            "the body of the post",
+            0,
+        )
+        .created_at(1_767_312_000_000);
+        b.url = Some(url::Url::parse("https://example.com/gardening").unwrap());
+        b.author = Some(mbm_core::bookmark::Author::new("simonw"));
+        b.push_tag("rust");
+        Repo::new(&conn).insert(&b).unwrap();
+
+        let mut app = App::new(Arc::new(std::sync::Mutex::new(conn)), "");
+        app.act(Action::Open);
+        // wide enough that nothing wraps, so the assertion is about the layout
+        // and not about the terminal
+        let frame_text = render_to(120, 40, &mut app);
+        let lines: Vec<&str> =
+            frame_text.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
+        let title_at =
+            lines.iter().position(|l| l.contains("the body of the post")).expect("the title");
+        let url_at = lines.iter().position(|l| l.contains("example.com")).expect("the url");
+        let tag_at = lines.iter().position(|l| l.contains("tags: rust")).expect("the tags");
+        assert!(title_at < url_at, "the url is below the title:\n{lines:?}");
+        assert!(url_at < tag_at, "the tags are below the url:\n{lines:?}");
+    }
+
+    #[test]
+    fn a_list_row_leaves_a_gap_after_the_medium() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("t.db")).unwrap();
+        mbm_store::migrate(&conn).unwrap();
+        Repo::new(&conn)
+            .insert(
+                &Bookmark::new(
+                    mbm_core::bookmark::SourceRef::new(
+                        mbm_core::medium::SourceMedium::HackerNews,
+                        "1",
+                        None,
+                    ),
+                    "a story",
+                    0,
+                )
+                .created_at(1_767_312_000_000),
+            )
+            .unwrap();
+        let mut app = App::new(Arc::new(std::sync::Mutex::new(conn)), "");
+        let frame_text = render_to(90, 12, &mut app);
+        assert!(
+            frame_text.contains("hackernews   a story")
+                || frame_text.contains("hackernews  a story"),
+            "the longest medium name needs a gap after it:\n{frame_text}"
+        );
+    }
+
+    #[test]
     fn the_tag_frame_lists_the_tags_with_their_counts() {
         let dir = tempfile::tempdir().unwrap();
         let mut app = seeded(dir.path());
@@ -1174,6 +1298,36 @@ mod tests {
         let frame_text = render_to(100, 30, &mut app);
         assert!(frame_text.contains("shared"), "{frame_text}");
         assert!(frame_text.contains('5'), "{frame_text}");
+    }
+
+    #[test]
+    fn a_filtered_list_is_labelled_as_a_search() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = seeded(dir.path());
+        assert_eq!(app.list_label(), "browse");
+
+        app.act(Action::Type('g'));
+        app.settle();
+        assert_eq!(app.list_label(), "search · hybrid", "a query makes it a search");
+
+        app.act(Action::Rank);
+        assert_eq!(app.list_label(), "search · exact");
+    }
+
+    #[test]
+    fn the_status_line_distinguishes_shown_from_total() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = seeded(dir.path());
+        assert!(render_to(120, 12, &mut app).contains("5 bookmarks"), "all of them");
+
+        // a query none of the seeded rows match, so the list is empty and the
+        // status line has to distinguish zero-of-five from five-of-five
+        for c in "zzzzqqq".chars() {
+            app.act(Action::Type(c));
+        }
+        app.settle();
+        let frame_text = render_to(120, 12, &mut app);
+        assert!(frame_text.contains("0 of 5 bookmarks"), "{frame_text}");
     }
 
     #[test]
