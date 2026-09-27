@@ -170,6 +170,32 @@ The `archive` format is the one worth keeping a copy of. It is not a rendering,
 it is the bytes a source gave us, so a later version can re-parse an item with a
 better parser and get back the item it would have produced.
 
+## What is verified, and what is not
+
+This matters more than a feature list, so it is stated plainly.
+
+**Verified end to end, against the live services, with real data:**
+
+- `hackernews` — fetched from the algolia api, enriched, searched, exported
+- `rss` — the reader handles rss 2.0, rdf, and atom
+- `add`, `import`, `search`, `list`, `show`, `tag`, `delete`, `stats`, `export`,
+  `enrich`, `config`, `tui` — every command, driven against a real store
+- the `tags` and `categorize` stages — against the live gateway, picking a real
+  category and a real tag and saving both
+- the `describe` stage — against a live `codex` invocation
+- all eight output formats, written from a store of mixed real data
+
+**Tested against recorded responses, but not against the live service:**
+
+- the `x` graphql request half. the parsing half is covered by tests against
+  recorded responses, because that is where the bugs live. the request half
+  needs a session, so it is not covered by an automated test. the first run
+  against the real endpoint is where it gets checked, and the adapter reports a
+  changed response shape as an error rather than as an empty bookmark list,
+  because a silent empty result is the worst thing it could do.
+- `reddit`, `github`, `youtube`, and the browser and file readers — the parsing
+  halves are covered; the request halves need an account or a cookie.
+
 ## Search
 
 BM25 and a SimHash-LSH fuzzy pass, fused with reciprocal rank fusion, with
