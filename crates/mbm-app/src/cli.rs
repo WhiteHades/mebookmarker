@@ -546,6 +546,23 @@ impl Output {
 /// what a read produced: the bookmarks, and the paths that could not be read.
 type Read = (Vec<mbm_core::bookmark::Bookmark>, Vec<(PathBuf, String)>);
 
+/// whether a markdown file is the personal-archive shape.
+///
+/// two `#` day headings is the signal. a note about markdown has headings too,
+/// and a file with two of them is far more likely to be a document than an
+/// archive.
+fn body_has_day_headings(body: &str) -> bool {
+    body.lines()
+        .filter(|line| line.starts_with("# "))
+        .take(3)
+        .filter(|line| {
+            let rest = &line[2..];
+            rest.contains(',') && rest.chars().filter(char::is_ascii_digit).count() >= 4
+        })
+        .count()
+        >= 2
+}
+
 /// read one file, guessing the format from what it holds.
 fn read_one_file(path: &Path, format: Option<&str>) -> Result<Read> {
     let body = std::fs::read_to_string(path).map_err(|e| Error::io(path, e))?;
@@ -560,6 +577,10 @@ fn read_one_file(path: &Path, format: Option<&str>) -> Result<Read> {
             "html" | "htm" => "netscape",
             "json" | "jsonl" => "json",
             "txt" => "urls",
+            // a markdown file with `#` day headings and `## @handle` entries is
+            // the personal-archive shape, and a plain note is not
+            "md" | "markdown" if body_has_day_headings(&body) => "archive",
+            "md" | "markdown" => "document",
             _ => "guess",
         }
     });
@@ -573,8 +594,24 @@ fn read_one_file(path: &Path, format: Option<&str>) -> Result<Read> {
                 mbm_ingest::parse_json(body.as_bytes(), SourceMedium::LocalFile)?;
             items
         }
-        "markdown" | "md" => {
+        "document" | "markdown" | "md" => {
             vec![mbm_ingest::parse_text_document(path, &body)?]
+        }
+        "archive" => {
+            // a `- **Filed:**` line is relative to the archive file, so the
+            // links it produces have to be resolved against where it sat
+            let dir = path.parent();
+            mbm_ingest::parse_markdown_archive(&body)?
+                .into_iter()
+                .map(|entry| {
+                    let created = entry
+                        .day
+                        .as_deref()
+                        .and_then(mbm_ingest::day_to_unix_ms)
+                        .unwrap_or_else(now_ms);
+                    mbm_ingest::markdown_file::to_bookmark_in(&entry, created, dir)
+                })
+                .collect()
         }
         other => {
             // a json file whose extension says nothing still reads as json, and
