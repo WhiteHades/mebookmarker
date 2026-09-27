@@ -33,6 +33,9 @@ pub struct Record {
     /// a title, generated or given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// one line on what the item is for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
     /// the body as the source gave it.
     pub text: String,
     /// the primary url.
@@ -93,6 +96,7 @@ impl From<&Bookmark> for Record {
             medium: b.source.medium.name().to_owned(),
             external_id: b.source.external_id.clone(),
             title: Some(display_title(b)),
+            summary: crate::summary_of(b).map(str::to_owned),
             text: b.text.clone(),
             url: b.url.as_ref().map(ToString::to_string),
             author: b.author.as_ref().map(|a| match &a.name {
@@ -335,6 +339,37 @@ mod tests {
         let line = Record::from(&one("a\nmultiline\npost")).to_line();
         assert!(!line.contains('\n'), "{line}");
         serde_json::from_str::<Record>(&line).unwrap();
+    }
+
+    #[test]
+    fn a_record_carries_the_generated_summary() {
+        let mut b = one("a post");
+        b.summary = Some("what it is for".to_owned());
+        let record = Record::from(&b);
+        assert_eq!(record.summary.as_deref(), Some("what it is for"));
+        let back: Record = serde_json::from_str(&record.to_line()).unwrap();
+        assert_eq!(back.summary.as_deref(), Some("what it is for"));
+    }
+
+    #[test]
+    fn a_link_summary_is_used_when_the_row_has_none() {
+        let mut b = one("a post");
+        b.links.push(Link {
+            original: Url::parse("https://example.com/a").unwrap(),
+            resolved: Url::parse("https://example.com/a").unwrap(),
+            kind: LinkKind::Article,
+            title: None,
+            body: None,
+            summary: Some("from the page".to_owned()),
+            blocked: None,
+        });
+        assert_eq!(Record::from(&b).summary.as_deref(), Some("from the page"));
+    }
+
+    #[test]
+    fn a_record_with_no_summary_omits_the_field() {
+        let line = Record::from(&one("a post")).to_line();
+        assert!(!line.contains("summary"), "{line}");
     }
 
     #[test]
