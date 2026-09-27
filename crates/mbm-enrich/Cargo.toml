@@ -26,6 +26,7 @@ blake3.workspace = true
 ahash.workspace = true
 thiserror.workspace = true
 rayon.workspace = true
+rusqlite.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "fs"] }
