@@ -982,11 +982,11 @@ fn collect_youtube_entries(value: &serde_json::Value, out: &mut Vec<Entry>) {
     match value {
         serde_json::Value::Object(map) => {
             for (key, child) in map {
-                if key == "playlistVideoRenderer" || key == "lockupViewModel" {
-                    if let Some(entry) = youtube_entry(child) {
-                        out.push(entry);
-                        continue;
-                    }
+                if (key == "playlistVideoRenderer" || key == "lockupViewModel")
+                    && let Some(entry) = youtube_entry(child)
+                {
+                    out.push(entry);
+                    continue;
                 }
                 collect_youtube_entries(child, out);
             }
