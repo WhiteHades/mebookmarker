@@ -29,5 +29,4 @@ blake3.workspace = true
 percent-encoding.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "time", "fs"] }
 tempfile.workspace = true
