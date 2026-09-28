@@ -19,9 +19,13 @@ use mbm_app::tui::theme::{
 /// what a role has to clear.
 #[derive(Clone, Copy)]
 struct Need {
+    /// the WCAG 2 ratio, which is the number a conformance claim rests on.
     wcag: f64,
+    /// the APCA lightness contrast, which is the number the palette is designed
+    /// against and the stricter of the two on a dark background.
     apca: f64,
-    size: TextSize,
+    /// the weight, which APCA weighs. the size is not here on purpose: a value
+    /// can be drawn at more than one, so both are checked and the worse wins.
     weight: Weight,
 }
 
@@ -53,11 +57,12 @@ fn solve(
     to: f64,
 ) -> Option<(f64, (u8, u8, u8))> {
     for i in 0..=400 {
-        let l = from + (to - from) * (i as f64 / 400.0);
-        let (r, g, b) = step(l, chroma, hue);
+        let along = f64::from(i) / 400.0;
+        let lightness = from + (to - from) * along;
+        let (r, g, b) = step(lightness, chroma, hue);
         let candidate = Color::Rgb(r, g, b);
         if backgrounds.iter().all(|(_, bg)| clears(candidate, *bg, need).2) {
-            return Some((l, (r, g, b)));
+            return Some((lightness, (r, g, b)));
         }
     }
     None
@@ -77,16 +82,16 @@ fn show(
     need: Need,
 ) {
     match found {
-        Some((l, (r, g, b))) => {
+        Some((lightness, (red, green, blue))) => {
             let detail = backgrounds
                 .iter()
                 .map(|(name, bg)| {
-                    let (w, a, _) = clears(Color::Rgb(r, g, b), *bg, need);
-                    format!("{name} {w:.2}:1 Lc{a:.0}")
+                    let (ratio, lc, _) = clears(Color::Rgb(red, green, blue), *bg, need);
+                    format!("{name} {ratio:.2}:1 Lc{lc:.0}")
                 })
                 .collect::<Vec<_>>()
                 .join("  ");
-            println!("  {label:<24} L={l:.3}  #{r:02x}{g:02x}{b:02x}   {detail}");
+            println!("  {label:<24} L={lightness:.3}  #{red:02x}{green:02x}{blue:02x}   {detail}");
         }
         None => println!("  {label:<24} no value clears every background"),
     }
@@ -101,7 +106,6 @@ const NEUTRAL_HUE: f64 = 250.0;
 const ACCENT_HUE: f64 = 255.0;
 const DANGER_HUE: f64 = 27.0;
 const WARNING_HUE: f64 = 75.0;
-const SUCCESS_HUE: f64 = 145.0;
 
 fn main() {
     for appearance in [Appearance::Dark, Appearance::Light] {
@@ -112,20 +116,16 @@ fn main() {
         let (a, b) =
             if appearance == Appearance::Dark { (0.30_f64, 0.99_f64) } else { (0.99, 0.30) };
 
-        let caption =
-            Need { wcag: 4.5, apca: 60.0, size: TextSize::Caption, weight: Weight::Regular };
-        let body = Need { wcag: 4.5, apca: 60.0, size: TextSize::Body, weight: Weight::Regular };
-        let disabled =
-            Need { wcag: 3.0, apca: 30.0, size: TextSize::Caption, weight: Weight::Regular };
-        let bar = Need { wcag: 3.0, apca: 45.0, size: TextSize::Caption, weight: Weight::Bold };
-        let focus =
-            Need { wcag: 3.0, apca: 40.0, size: TextSize::Caption, weight: Weight::Regular };
+        let caption = Need { wcag: 4.5, apca: 60.0, weight: Weight::Regular };
+        let body = Need { wcag: 4.5, apca: 60.0, weight: Weight::Regular };
+        let disabled = Need { wcag: 3.0, apca: 30.0, weight: Weight::Regular };
+        let bar = Need { wcag: 3.0, apca: 45.0, weight: Weight::Bold };
+        let focus = Need { wcag: 3.0, apca: 40.0, weight: Weight::Regular };
         // the resting frame is held a little above the bare discernibility
         // floor. the floor is where a line stops being invisible at all, and a
         // frame drawn there looks like a mistake rather than a boundary, so the
         // walk is given a margin and the result is quiet without being absent.
-        let frame =
-            Need { wcag: 1.2, apca: 20.0, size: TextSize::Caption, weight: Weight::Regular };
+        let frame = Need { wcag: 1.2, apca: 20.0, weight: Weight::Regular };
 
         // a caption can sit on the page, on a raised panel, or on the selected
         // row, and the selected row is whichever of the three is furthest from
@@ -201,11 +201,7 @@ fn main() {
             frame,
         );
 
-        for (name, hue, chroma) in [
-            ("danger", DANGER_HUE, 0.14),
-            ("warning", WARNING_HUE, 0.12),
-            ("success", SUCCESS_HUE, 0.11),
-        ] {
+        for (name, hue, chroma) in [("danger", DANGER_HUE, 0.14), ("warning", WARNING_HUE, 0.12)] {
             show(name, solve(&three, caption, hue, chroma, a, b), &three, caption);
         }
     }

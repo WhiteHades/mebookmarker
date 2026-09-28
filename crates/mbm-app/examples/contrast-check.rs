@@ -220,15 +220,6 @@ fn pairs(t: &Theme) -> Vec<Pair> {
             weight: regular,
         },
         Pair {
-            name: "success on page",
-            foreground: t.success,
-            background: t.bg_page,
-            wcag: 4.5,
-            apca: 60.0,
-            size: caption,
-            weight: regular,
-        },
-        Pair {
             name: "danger on selected",
             foreground: t.danger,
             background: t.bg_selected,
