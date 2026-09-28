@@ -571,19 +571,20 @@ type Read = (Vec<mbm_core::bookmark::Bookmark>, Vec<(PathBuf, String)>);
 
 /// whether a markdown file is the personal-archive shape.
 ///
-/// two `#` day headings is the signal. a note about markdown has headings too,
-/// and a file with two of them is far more likely to be a document than an
-/// archive.
+/// whether a markdown file is a personal archive rather than a note.
+///
+/// the shape is a day heading and entries under it, so both have to be there.
+/// the earlier test wanted two day headings, which quietly mis-read every
+/// archive file a person had only started writing: one day is the common case,
+/// not the edge one.
 fn body_has_day_headings(body: &str) -> bool {
-    body.lines()
-        .filter(|line| line.starts_with("# "))
-        .take(3)
-        .filter(|line| {
-            let rest = &line[2..];
-            rest.contains(',') && rest.chars().filter(char::is_ascii_digit).count() >= 4
-        })
-        .count()
-        >= 2
+    let is_day = |line: &str| {
+        let rest = line.strip_prefix("# ").unwrap_or_default();
+        rest.contains(',') && rest.chars().filter(char::is_ascii_digit).count() >= 4
+    };
+    let days = body.lines().filter(|l| is_day(l)).count();
+    let entries = body.lines().filter(|l| l.starts_with("## ")).count();
+    days >= 1 && entries >= 1
 }
 
 /// read one file, guessing the format from what it holds.
