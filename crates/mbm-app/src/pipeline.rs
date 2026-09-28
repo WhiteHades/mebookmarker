@@ -537,13 +537,28 @@ pub fn list(
     Repo::new(conn).query(filter, limit, offset)
 }
 
-/// open the store, creating and migrating it if needed.
+/// open the store, creating it if it is not there.
+///
+/// a store written by a different build is not upgraded and cannot be: the
+/// store is derived data, so the honest response to one is to say so and let
+/// the caller start again. `mbm rebuild` is the command that does that.
 pub fn open(config: &Config) -> Result<Connection> {
     std::fs::create_dir_all(&config.data_dir).map_err(|e| Error::io(&config.data_dir, e))?;
-    let path = config.database();
-    let conn = Connection::open(&path).map_err(|e| sql(&e))?;
-    mbm_store::migrate(&conn)?;
-    Ok(conn)
+    mbm_store::open(&config.database())
+}
+
+/// delete the store, so the next run builds a fresh one.
+///
+/// the re-fetch is the point: a store that is wrong is cheaper to rebuild than
+/// to reason about, and every row in it came from a source that still has it.
+pub fn reset(config: &Config) -> Result<()> {
+    for suffix in ["", "-wal", "-shm"] {
+        let path = config.database().with_extension(format!("db{suffix}"));
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| Error::io(&path, e))?;
+        }
+    }
+    Ok(())
 }
 
 fn sql(e: &rusqlite::Error) -> Error {
