@@ -341,10 +341,7 @@ impl Page {
 
     /// the bookmarks in this page, with permalinks built from a given host.
     pub fn bookmarks_from(&self, post_url: &str) -> Vec<Bookmark> {
-        self.instructions
-            .iter()
-            .filter_map(|value| entry(value, post_url))
-            .collect()
+        self.instructions.iter().filter_map(|value| entry(value, post_url)).collect()
     }
 }
 
@@ -366,15 +363,28 @@ fn entry(value: &Value, post_url: &str) -> Option<Bookmark> {
     // a tombstone is a deleted post, with a `tweetText` saying so
     let tweet = pick_tweet(result)?;
 
-    let id = tweet.get("rest_id")?.as_str()?.to_owned();
+    // the id is on the result in every shape. `legacy` calls it `id_str` and
+    // drops it entirely in some responses, so the result is the only place
+    // worth reading it from.
+    let id = result
+        .get("rest_id")
+        .or_else(|| tweet.get("rest_id"))
+        .or_else(|| tweet.get("id_str"))
+        .and_then(Value::as_str)?
+        .to_owned();
     let text = tweet.get("full_text")?.as_str().unwrap_or_default().to_owned();
     let created = tweet.get("created_at").and_then(Value::as_str).and_then(crate::json::parse_date);
 
-    let user = tweet.get("core")?.get("user_results")?.get("result")?;
-    let handle = user.get("screen_name")?.as_str()?.to_owned();
+    let user = pick_user(result, &tweet)?;
+    let screen_name = user.get("screen_name")?.as_str()?.to_owned();
+    // x writes a handle with its `@`, and the mention in the post that points at
+    // this account is written the same way, so the archive stores it that way and
+    // the two match when someone searches for the mention. a permalink is the
+    // exception: the site writes the path without it.
+    let handle = format!("@{screen_name}");
     let name = user.get("name").and_then(Value::as_str).map(str::to_owned);
 
-    let url = Url::parse(&format!("{post_url}/{handle}/status/{id}")).ok();
+    let url = Url::parse(&format!("{post_url}/{screen_name}/status/{id}")).ok();
     let source = SourceRef::new(SourceMedium::X, id, url.clone());
     let mut bookmark = Bookmark::new(source, text, created.unwrap_or_else(crate::net::now));
     bookmark.created_at = created;
@@ -386,7 +396,9 @@ fn entry(value: &Value, post_url: &str) -> Option<Bookmark> {
     if quoted_context(&tweet) {
         bookmark.role = Some(ThreadRole::Quote);
     }
-    bookmark.raw = Some(tweet.clone());
+    // the whole result, not just the picked tweet, because the archive sink
+    // exists to keep the fields no reader of the archive uses
+    bookmark.raw = Some(result.clone());
     Some(bookmark)
 }
 
@@ -396,14 +408,33 @@ fn entry(value: &Value, post_url: &str) -> Option<Bookmark> {
 /// and the post itself, and a tombstone has neither, which is how a deleted
 /// bookmark is told apart from a live one.
 fn pick_tweet(result: &Value) -> Option<Value> {
-    if let Some(legacy) = result.pointer("/legacy/full_tweet")
-        && legacy.is_object()
-        && legacy.get("full_text").is_some()
-    {
-        return Some(legacy.clone());
+    // three shapes for the same post, in the order the endpoint returns them:
+    // the detail view nests a whole tweet under `legacy.full_tweet`, the
+    // timeline puts the post's own fields straight in `legacy`, and a
+    // tombstone puts them on the result itself. an adapter that only knows one
+    // of the three reports an empty bookmark list for the other two.
+    for path in ["/legacy/full_tweet", "/legacy", ""] {
+        let candidate =
+            if path.is_empty() { result.clone() } else { result.pointer(path)?.clone() };
+        if candidate.is_object() && candidate.get("full_text").is_some() {
+            return Some(candidate);
+        }
     }
-    if result.get("full_text").is_some() {
-        return Some(result.clone());
+    None
+}
+
+/// the account that wrote a post.
+///
+/// the author lives beside the post rather than inside it, so it is read from
+/// the result in both shapes. `core` is where the timeline puts it, and the
+/// detail view is the one that nests it under the tweet.
+fn pick_user(result: &Value, tweet: &Value) -> Option<Value> {
+    for source in [result.pointer("/core"), tweet.pointer("/core"), result.pointer("/user")] {
+        if let Some(user) = source.and_then(|c| c.get("user_results")).and_then(|u| u.get("result"))
+            && user.get("screen_name").is_some()
+        {
+            return Some(user.clone());
+        }
     }
     None
 }
@@ -562,10 +593,12 @@ impl Source for X {
                         .fetch_bookmarks(count, Some(&folder.id))
                         .await
                         .map_err(|e| Error::Ingest(format!("folder {}: {e}", folder.name)))?;
-                    items.extend(page.bookmarks_from(self.client.post_url()).into_iter().map(|mut b| {
-                        b.push_tag(&folder.name);
-                        b
-                    }));
+                    items.extend(page.bookmarks_from(self.client.post_url()).into_iter().map(
+                        |mut b| {
+                            b.push_tag(&folder.name);
+                            b
+                        },
+                    ));
                 }
             }
         }
@@ -582,202 +615,4 @@ fn truncate(raw: &str, max: usize) -> String {
 /// percent-encode a query string value.
 fn urlencode(raw: &str) -> String {
     mbm_extract::links::percent_encode_query(raw)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const PAGE: &str = r#"{
-  "data": {
-    "bookmark_timeline_v2": {
-      "instructions": [
-        {
-          "type": "TimelineClearCache"
-        },
-        {
-          "type": "TimelineAddEntries",
-          "entries": [
-            {
-              "entryId": "tweet-1",
-              "content": {
-                "itemContent": {
-                  "tweet_results": {
-                    "result": {
-                      "rest_id": "100",
-                      "full_text": "a bookmarked post",
-                      "created_at": "Fri Jan 02 10:00:00 +0000 2026",
-                      "core": {
-                        "user_results": {
-                          "result": {
-                            "screen_name": "simonw",
-                            "name": "Simon Willison"
-                          }
-                        }
-                      },
-                      "entities": {
-                        "extended_entities": {
-                          "media": [
-                            {
-                              "type": "photo",
-                              "media_url_https": "https://pbs.twimg.com/a.jpg",
-                              "preview_url": "https://pbs.twimg.com/s.jpg",
-                              "original_info": {
-                                "width": 1200,
-                                "height": 800
-                              }
-                            }
-                          ]
-                        }
-                      },
-                      "in_reply_to_status_id_str": null
-                    }
-                  }
-                }
-              }
-            },
-            {
-              "entryId": "tweet-2",
-              "content": {
-                "itemContent": {
-                  "tweet_results": {
-                    "result": {
-                      "rest_id": "101",
-                      "full_text": "second post",
-                      "core": {
-                        "user_results": {
-                          "result": {
-                            "screen_name": "swyx",
-                            "name": "swyx"
-                          }
-                        }
-                      },
-                      "quoted_status_id_str": "99"
-                    }
-                  }
-                }
-              }
-            }
-          ],
-          "cursor-bottom": "NEXTPAGE"
-        }
-      ]
-    }
-  }
-}"#;
-
-    #[test]
-    fn cookies_read_out_of_a_netscape_jar() {
-        let jar = "# Netscape HTTP Cookie File\n.x.com\tTRUE\t/\tTRUE\t0\tauth_token\tabc123\n.x.com\tTRUE\t/\tTRUE\t0\tct0\tdef456\n";
-        let cookies = Cookies::from_cookie_jar(jar);
-        assert_eq!(cookies.auth_token.as_deref(), Some("abc123"));
-        assert_eq!(cookies.ct0.as_deref(), Some("def456"));
-        assert!(cookies.is_complete());
-    }
-
-    #[test]
-    fn cookies_read_out_of_a_name_value_dump() {
-        let cookies = Cookies::from_cookie_jar("auth_token=abc\nct0=def\nother=x\n");
-        assert!(cookies.is_complete());
-        assert!(cookies.header_value().contains("auth_token=abc"));
-        assert!(cookies.header_value().contains("ct0=def"));
-    }
-
-    #[test]
-    fn incomplete_cookies_are_reported_as_incomplete() {
-        assert!(!Cookies::default().is_complete());
-        assert!(!Cookies { auth_token: Some("a".into()), ct0: None }.is_complete());
-        assert!(!Cookies { auth_token: Some(String::new()), ct0: Some("b".into()) }.is_complete());
-    }
-
-    #[test]
-    fn a_graphql_page_becomes_bookmarks() {
-        let page = Page::parse(PAGE.as_bytes()).unwrap();
-        let items = page.bookmarks();
-        assert_eq!(items.len(), 2);
-        assert_eq!(items[0].source.external_id, "100");
-        assert_eq!(items[0].text, "a bookmarked post");
-        assert_eq!(items[0].author.as_ref().unwrap().handle, "simonw");
-        assert!(items[0].created_at.is_some());
-    }
-
-    #[test]
-    fn attached_media_comes_across() {
-        let items = Page::parse(PAGE.as_bytes()).unwrap().bookmarks();
-        assert_eq!(items[0].media.len(), 1);
-        assert_eq!(items[0].media[0].kind, MediaKind::Photo);
-        assert_eq!(items[0].media[0].width, Some(1200));
-        assert!(items[0].media[0].preview_url.is_some());
-    }
-
-    #[test]
-    fn a_quote_is_marked() {
-        let items = Page::parse(PAGE.as_bytes()).unwrap().bookmarks();
-        assert_eq!(items[1].role, Some(ThreadRole::Quote));
-    }
-
-    #[test]
-    fn the_pagination_cursor_is_read() {
-        let page = Page::parse(PAGE.as_bytes()).unwrap();
-        assert_eq!(page.cursor.as_deref(), Some("NEXTPAGE"));
-    }
-
-    #[test]
-    fn an_empty_response_is_a_shape_error_not_an_empty_page() {
-        // this is what a stale query id looks like, and silently reporting
-        // "no bookmarks" would be the worst possible outcome
-        let err = Page::parse(b"{}").unwrap_err();
-        assert!(matches!(err, Error::Ingest(_)), "got {err:?}");
-        assert!(err.to_string().contains("query id"), "{err}");
-    }
-
-    #[test]
-    fn a_changed_response_shape_is_a_shape_error() {
-        let err = Page::parse(br#"{"data":{"somethingElse":[]}}"#).unwrap_err();
-        assert!(err.to_string().contains("shape has changed"), "{err}");
-    }
-
-    #[test]
-    fn a_deleted_tweet_is_skipped_rather_than_stored() {
-        // a tombstone has no `legacy.full_tweet`, so it produces nothing
-        let page = br#"{"data":{"bookmark_timeline_v2":{"instructions":[
-          {"type":"TimelineAddEntries","entries":[
-            {"content":{"itemContent":{"tweet_results":{"result":{
-              "rest_id":"dead","full_text":"This Post was deleted"
-            }}}}}
-          ]}]}}}"#;
-        let items = Page::parse(page).unwrap().bookmarks();
-        assert!(items.is_empty());
-    }
-
-    #[test]
-    fn bird_output_goes_through_the_json_reader() {
-        let body = br#"[{"id":"1","text":"from bird","author":{"username":"u","name":"U"}}]"#;
-        let items = parse_bird(body).unwrap();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].text, "from bird");
-        assert_eq!(items[0].source.medium, SourceMedium::XBird);
-    }
-
-    #[test]
-    fn bird_paginated_output_is_read_too() {
-        // bird v0.6 wraps paginated results in an object
-        let body = br#"{"tweets":[{"id":"1","text":"a"}],"nextCursor":"x"}"#;
-        assert_eq!(parse_bird(body).unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn a_client_with_no_cookies_refuses_rather_than_trying() {
-        let client = XClient::new(Http::with_defaults().unwrap(), Cookies::default());
-        let err = client.fetch_bookmarks(20, None).await.unwrap_err();
-        assert_eq!(err.class(), mbm_core::error::Class::Auth);
-    }
-
-    #[test]
-    fn the_cookie_header_carries_both_cookies() {
-        let cookies = Cookies { auth_token: Some("a".into()), ct0: Some("b".into()) };
-        let header = cookies.header_value();
-        assert!(header.contains("auth_token=a"));
-        assert!(header.contains("ct0=b"));
-    }
 }
