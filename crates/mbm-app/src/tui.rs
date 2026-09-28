@@ -425,7 +425,7 @@ impl App {
                         self.query.clone_from(&tag);
                         self.selected = 0;
                         self.view = View::Browse;
-                        self.say(format!("showing {count} with {tag}"));
+                        self.say(format!("{count} bookmarks tagged {tag}"));
                         self.reload();
                     }
                 } else if self.selected_item().is_some() {
@@ -436,13 +436,13 @@ impl App {
                     self.opened.restart();
                 }
             }
-            // every view but the tag list goes back to the list
+            // escape leaves whatever is showing except the list, which is
+            // already the place escape has to mean "back to"
+            //
+            // the selection is not touched, so coming back from an item lands
+            // on the row that was open rather than at the top of the list.
             Action::Back => {
-                if self.view == View::Detail {
-                    // the selection is remembered, so coming back lands on the
-                    // row that was open rather than at the top
-                    self.view = View::Browse;
-                } else {
+                if self.view != View::Browse {
                     self.view = View::Browse;
                 }
             }
@@ -455,7 +455,7 @@ impl App {
                     Mode::Exact => Mode::Fuzzy,
                     Mode::Fuzzy => Mode::Hybrid,
                 };
-                self.say(format!("ranking: {}", mode_label(self.mode)));
+                self.say(format!("ranking by {}", mode_label(self.mode)));
                 self.reload();
             }
             Action::Tag => {

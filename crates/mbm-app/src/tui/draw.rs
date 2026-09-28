@@ -75,12 +75,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, theme: &Theme, motion: Motion)
 /// rows tall is two rows of chrome spent on nothing, and the fill is what makes
 /// it read as a field.
 fn draw_query(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
+    // the hint names the key that does the thing it describes. the earlier one
+    // offered "esc to clear" and escape does not clear: it leaves a view, and in
+    // the list there is no view to leave, so it did nothing at all.
     let (label, text, hint) = if let Some(buffer) = app.tag_input.as_deref() {
         ("tag", buffer.to_owned(), "enter to add · esc to cancel")
     } else if app.query.is_empty() {
         ("search", String::new(), "type to search the archive")
     } else {
-        ("search", app.query.clone(), "esc to clear")
+        ("search", app.query.clone(), "ctrl-k to clear")
     };
 
     let width = area.width as usize;
@@ -585,7 +588,11 @@ fn draw_tags(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
                 )),
                 Line::default(),
                 Line::from(Span::styled(
-                    "tags come from the sources, from the links in a post, and from f2 on any item.",
+                    "a tag comes from where a bookmark came from, from the links inside it,",
+                    Style::default().fg(theme.text_secondary),
+                )),
+                Line::from(Span::styled(
+                    "and from f2 on any item.",
                     Style::default().fg(theme.text_secondary),
                 )),
             ]))
@@ -682,11 +689,7 @@ fn empty_state(app: &App, theme: &Theme) -> Paragraph<'static> {
         )));
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
-            "ctrl-u puts the last one back, ctrl-k clears the query.",
-            Style::default().fg(theme.text_secondary),
-        )));
-        lines.push(Line::from(Span::styled(
-            "esc goes back to the whole archive.",
+            "ctrl-k clears it and brings the whole archive back.",
             Style::default().fg(theme.text_secondary),
         )));
     }
