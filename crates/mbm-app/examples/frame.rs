@@ -28,7 +28,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let store = PathBuf::from(args.next().unwrap_or_else(|| ".".to_owned()));
     let size = args.next().unwrap_or_else(|| "100x30".to_owned());
     let out = PathBuf::from(args.next().unwrap_or_else(|| "/tmp/frame".to_owned()));
-    let appearance = args.next().unwrap_or_else(|| "dark".to_owned());
+    // `auto` reads the terminal the same way the interface does, so the two can
+    // be compared on one machine
+    let appearance = args.next().unwrap_or_else(|| "auto".to_owned());
     let view = args.next().unwrap_or_else(|| "browse".to_owned());
 
     let (width, height): (u16, u16) = size
@@ -45,10 +47,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         app.act(mbm_app::tui::Action::Tags);
     }
 
-    let theme = Theme::for_appearance(match appearance.as_str() {
+    let chosen = match appearance.as_str() {
         "light" => Appearance::Light,
-        _ => Appearance::Dark,
-    });
+        "dark" => Appearance::Dark,
+        other => {
+            let detected = mbm_app::tui::theme::terminal_appearance().unwrap_or(Appearance::Dark);
+            eprintln!("appearance {other:?} -> {detected:?}");
+            detected
+        }
+    };
+    let theme = Theme::for_appearance(chosen);
 
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend)?;
