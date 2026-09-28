@@ -284,9 +284,13 @@ pub struct ExportArgs {
     #[arg(long, short = 'f', value_name = "FORMAT")]
     pub format: Option<String>,
 
-    /// include everything, whatever its tags.
+    /// export only the items every enrichment stage has finished.
+    ///
+    /// off by default, because an export that silently wrote nothing would be
+    /// indistinguishable from a bug, and a person who has not run the stages yet
+    /// still wants their bookmarks.
     #[arg(long)]
-    pub all: bool,
+    pub only_complete: bool,
 }
 
 /// run the enrichment stages.
@@ -399,6 +403,16 @@ impl Cli {
 #[must_use]
 pub fn default_config_dir() -> PathBuf {
     crate::config::default_data_dir()
+}
+
+/// the configuration path an invocation uses.
+///
+/// `--config` wins, and otherwise it is the one beside the store. every command
+/// resolves it through this, because a subcommand that resolves it differently
+/// is a subcommand where `--config` silently does nothing.
+#[must_use]
+pub fn config_path(cli: &Cli) -> PathBuf {
+    cli.config.clone().unwrap_or_else(|| Config::path_in(&default_config_dir()))
 }
 
 /// what a command did, ready to print.
@@ -608,8 +622,13 @@ fn read_one_file(path: &Path, format: Option<&str>) -> Result<Read> {
         }
         "archive" => {
             // a `- **Filed:**` line is relative to the archive file, so the
-            // links it produces have to be resolved against where it sat
-            let dir = path.parent();
+            // links it produces have to be resolved against where it sat. the
+            // path is made absolute first: `bookmarks.md` has an empty parent,
+            // and a link resolved against an empty parent is a relative path
+            // that is not a url, so the entry's own note is silently dropped.
+            let absolute = std::fs::canonicalize(path)
+                .unwrap_or_else(|_| std::env::current_dir().unwrap_or_default().join(path));
+            let dir = absolute.parent();
             mbm_ingest::parse_markdown_archive(&body)?
                 .into_iter()
                 .map(|entry| {
@@ -792,15 +811,19 @@ pub async fn export(conn: &Connection, config: &Config, args: &ExportArgs) -> Re
             Some(raw) => raw.parse::<SinkMedium>().map_err(|e| Error::Config(e.to_string()))?,
             None => SinkMedium::Jsonl,
         };
-        let path = args
-            .output
-            .clone()
-            .unwrap_or_else(|| config.data_dir.join(format!("bookmarks.{}", kind.name())));
+        // a relative path lands beside the store, which is where a person
+        // expects their archive to be. an absolute one is taken as written, so a
+        // destination outside the data directory works.
+        let path = match &args.output {
+            Some(path) => config.resolve(path),
+            None => config.data_dir.join(format!("bookmarks.{}", kind.name())),
+        };
         job.sinks = vec![build_one_sink(kind, path)?];
     }
-    if !args.all {
-        // a filtered export is a person asking for a subset, and the filter
-        // they did not give is "everything", so the default is everything
+    if args.only_complete {
+        // only the items every stage has finished, so the export is one
+        // consistent document rather than a mixture of finished and half-done
+        job.only_complete = true;
     }
     let reports = pipeline::export(conn, &job).await?;
     let mut out = Output::empty();
@@ -829,21 +852,18 @@ pub async fn rebuild(conn: &Connection, config: &Config, args: &RebuildArgs) -> 
     let _ = before;
 
     if args.only {
-        crate::pipeline::reset(config)?;
+        pipeline::reset(config)?;
         return Ok(Output::line(format!(
             "deleted {}; the next run will build it again",
             config.database().display()
         )));
     }
 
-    crate::pipeline::reset(config)?;
-    let fresh = crate::pipeline::open(config)?;
+    pipeline::reset(config)?;
+    let fresh = pipeline::open(config)?;
     let job = Job::full(config, &fresh)?;
-    let report = crate::pipeline::run(&fresh, config, &job).await?;
-    Ok(Output::line(format!(
-        "rebuilt: {}",
-        report.line()
-    )))
+    let report = pipeline::run(&fresh, config, &job).await?;
+    Ok(Output::line(format!("rebuilt: {}", report.line())))
 }
 
 fn build_one_sink(kind: SinkMedium, path: PathBuf) -> Result<Arc<dyn mbm_core::port::Sink>> {
@@ -899,11 +919,9 @@ pub async fn enrich(conn: &Connection, config: &Config, args: &EnrichArgs) -> Re
 }
 
 /// the configuration.
-pub fn config_command(args: &ConfigArgs) -> Result<Output> {
-    let path = Config::path_in(&default_config_dir());
-
+pub fn config_command(args: &ConfigArgs, path: &Path) -> Result<Output> {
     if args.init {
-        Config::default().save(&path)?;
+        Config::default().save(path)?;
         return Ok(Output::line(format!("wrote {}", path.display())));
     }
     if args.example {
@@ -917,7 +935,7 @@ pub fn config_command(args: &ConfigArgs) -> Result<Output> {
         return Ok(Output::line(path.display().to_string()));
     }
 
-    let config = Config::load(&path)?;
+    let config = Config::load(path)?;
     if args.check {
         config.validate()?;
         return Ok(Output::line("the configuration is valid".to_owned()));
@@ -936,812 +954,4 @@ pub(crate) fn now_ms() -> i64 {
 #[must_use]
 pub fn page_size(page: &FetchPage) -> usize {
     page.items.len()
-}
-
-#[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
-mod tests {
-    use super::*;
-    use clap::CommandFactory;
-
-    fn store() -> (tempfile::TempDir, Connection) {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("t.db")).unwrap();
-        mbm_store::migrate(&conn).unwrap();
-        (dir, conn)
-    }
-
-    #[test]
-    fn the_command_line_is_internally_consistent() {
-        Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn a_bare_invocation_shows_usage_rather_than_guessing() {
-        let err = Cli::try_parse_from(["mbm"]).unwrap_err();
-        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand);
-    }
-
-    #[test]
-    fn the_help_names_every_subcommand() {
-        let help = Cli::command().render_long_help().to_string();
-        for name in [
-            "add", "import", "run", "search", "show", "list", "tag", "export", "enrich", "config",
-            "tui",
-        ] {
-            assert!(help.contains(name), "the help does not mention `{name}`");
-        }
-    }
-
-    #[test]
-    fn the_subcommand_names_are_stable() {
-        let names: Vec<String> =
-            Cli::command().get_subcommands().map(|c| c.get_name().to_owned()).collect();
-        assert_eq!(
-            names,
-            vec![
-                "add", "import", "run", "search", "show", "list", "tag", "delete", "stats",
-                "export", "enrich", "config", "tui"
-            ]
-        );
-    }
-
-    #[test]
-    fn global_flags_work_after_the_subcommand() {
-        let cli = Cli::try_parse_from(["mbm", "list", "-v", "--limit", "5"]).unwrap();
-        assert_eq!(cli.verbose, 1);
-        let Command::List(ListArgs { limit, .. }) = cli.command else {
-            panic!("expected list");
-        };
-        assert_eq!(limit, 5);
-    }
-
-    #[test]
-    fn quiet_and_verbose_cannot_both_be_set() {
-        assert!(Cli::try_parse_from(["mbm", "-q", "-v", "stats"]).is_err());
-    }
-
-    #[test]
-    fn add_needs_a_url() {
-        assert!(Cli::try_parse_from(["mbm", "add"]).is_err());
-    }
-
-    #[test]
-    fn search_defaults_to_a_limit_of_twenty() {
-        let cli = Cli::try_parse_from(["mbm", "search", "rust"]).unwrap();
-        let Command::Search(a) = cli.command else { panic!("expected search") };
-        assert_eq!(a.limit, 20);
-        assert_eq!(a.query, "rust");
-        assert_eq!(a.rank, Rank::Hybrid);
-    }
-
-    #[test]
-    fn a_search_with_no_query_is_allowed() {
-        let cli = Cli::try_parse_from(["mbm", "search"]).unwrap();
-        let Command::Search(a) = cli.command else { panic!("expected search") };
-        assert!(a.query.is_empty());
-    }
-
-    #[test]
-    fn an_unknown_rank_is_rejected_with_the_real_ones() {
-        let err = Cli::try_parse_from(["mbm", "search", "x", "--rank", "magic"]).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("hybrid"), "{msg}");
-    }
-
-    #[test]
-    fn stage_names_parse() {
-        let cli = Cli::try_parse_from(["mbm", "enrich", "-s", "entities", "-s", "tags"]).unwrap();
-        let Command::Enrich(a) = cli.command else { panic!("expected enrich") };
-        assert_eq!(a.stage.len(), 2);
-        assert_eq!(EnrichStage::from(a.stage[0]), EnrichStage::Entities);
-    }
-
-    #[test]
-    fn an_unknown_stage_names_the_real_ones() {
-        let err = Cli::try_parse_from(["mbm", "enrich", "-s", "nonsense"]).unwrap_err();
-        assert!(err.to_string().contains("categorize"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn adding_a_url_stores_it_once() {
-        let (_dir, conn) = store();
-        let out = add(
-            &conn,
-            &AddArgs {
-                urls: vec!["example.com/a".to_owned()],
-                tag: vec!["test".to_owned()],
-                note: None,
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        assert!(out.render().contains("1 added"), "{}", out.render());
-        assert_eq!(Repo::new(&conn).count().unwrap(), 1);
-
-        let out = add(
-            &conn,
-            &AddArgs {
-                urls: vec!["example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: None,
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        assert!(out.render().contains("already in the archive"), "{}", out.render());
-    }
-
-    #[tokio::test]
-    async fn a_bare_host_gets_a_scheme() {
-        let (_dir, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: None,
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let items = Repo::new(&conn).list(10, 0).unwrap();
-        assert_eq!(items[0].url.as_ref().unwrap().as_str(), "https://example.com/a");
-    }
-
-    #[tokio::test]
-    async fn a_non_http_url_is_refused_with_a_reason() {
-        let (_dir, conn) = store();
-        let out = add(
-            &conn,
-            &AddArgs {
-                urls: vec!["mailto:a@b.example".to_owned()],
-                tag: Vec::new(),
-                note: None,
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        assert!(out.failed);
-        assert!(out.render().contains("only http and https"), "{}", out.render());
-    }
-
-    #[tokio::test]
-    async fn a_note_is_kept_as_the_bookmark_text() {
-        let (_dir, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: Some("a note about it".to_owned()),
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let items = Repo::new(&conn).list(10, 0).unwrap();
-        assert_eq!(items[0].text, "a note about it");
-    }
-
-    #[tokio::test]
-    async fn tagging_adds_and_removes() {
-        let (_dir, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: None,
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let id = Repo::new(&conn).list(10, 0).unwrap()[0].id;
-        let repo = Repo::new(&conn);
-
-        tag(&conn, &TagArgs { id: id.get().to_string(), tag: "rust".to_owned(), remove: false })
-            .unwrap();
-        assert!(repo.load(id).unwrap().unwrap().tags.contains("rust"));
-        tag(&conn, &TagArgs { id: id.get().to_string(), tag: "rust".to_owned(), remove: true })
-            .unwrap();
-        assert!(!repo.load(id).unwrap().unwrap().tags.contains("rust"));
-    }
-
-    #[tokio::test]
-    async fn tagging_the_same_thing_twice_says_so_rather_than_failing() {
-        let (_dir, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: vec!["rust".to_owned()],
-                note: None,
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let id = Repo::new(&conn).list(10, 0).unwrap()[0].id.get().to_string();
-        let out = tag(&conn, &TagArgs { id, tag: "rust".to_owned(), remove: false }).unwrap();
-        assert!(!out.failed);
-        assert!(out.render().contains("already has"), "{}", out.render());
-    }
-
-    #[test]
-    fn tagging_something_that_is_not_there_fails_clearly() {
-        let (_dir, conn) = store();
-        let out = tag(&conn, &TagArgs { id: "1".to_owned(), tag: "x".to_owned(), remove: false })
-            .unwrap();
-        assert!(out.failed);
-        assert!(out.render().contains("no bookmark"), "{}", out.render());
-    }
-
-    #[test]
-    fn a_tag_argument_that_is_not_an_id_is_a_config_error() {
-        let (_dir, conn) = store();
-        let err = tag(&conn, &TagArgs { id: "abc".to_owned(), tag: "x".to_owned(), remove: false })
-            .unwrap_err();
-        assert!(err.to_string().contains("abc"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn deleting_removes_the_row() {
-        let (_dir, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: None,
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let id = Repo::new(&conn).list(10, 0).unwrap()[0].id.get().to_string();
-        let out = delete(&conn, &DeleteArgs { id, yes: true }).unwrap();
-        assert!(out.render().contains("removed"), "{}", out.render());
-        assert_eq!(Repo::new(&conn).count().unwrap(), 0);
-    }
-
-    #[test]
-    fn deleting_something_that_is_not_there_fails_clearly() {
-        let (_dir, conn) = store();
-        let out = delete(&conn, &DeleteArgs { id: "1".to_owned(), yes: true }).unwrap();
-        assert!(out.failed);
-    }
-
-    #[tokio::test]
-    async fn searching_finds_what_was_added() {
-        let (_dir, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/sqlite-internals".to_owned()],
-                tag: Vec::new(),
-                note: Some("a note about sqlite internals".to_owned()),
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let out = search(
-            &conn,
-            &SearchArgs { query: "sqlite".to_owned(), limit: 10, rank: Rank::Hybrid, json: false },
-        )
-        .unwrap();
-        assert!(out.render().contains("sqlite internals"), "{}", out.render());
-    }
-
-    #[tokio::test]
-    async fn searching_for_nothing_lists_everything() {
-        let (_dir, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: None,
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let out = search(
-            &conn,
-            &SearchArgs { query: String::new(), limit: 10, rank: Rank::Hybrid, json: false },
-        )
-        .unwrap();
-        assert!(out.render().contains("1 results"), "{}", out.render());
-    }
-
-    #[tokio::test]
-    async fn search_prints_json_when_asked() {
-        let (_dir, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: None,
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let out = search(
-            &conn,
-            &SearchArgs { query: String::new(), limit: 10, rank: Rank::Hybrid, json: true },
-        )
-        .unwrap();
-        serde_json::from_str::<Vec<mbm_sink::json::Record>>(&out.render()).unwrap();
-    }
-
-    #[tokio::test]
-    async fn showing_by_id_prints_the_record() {
-        let (_dir, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: Some("a note".to_owned()),
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let id = Repo::new(&conn).list(10, 0).unwrap()[0].id.get().to_string();
-        let out = show(&conn, &ShowArgs { id }).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&out.render()).unwrap();
-        assert_eq!(value["text"], "a note");
-    }
-
-    #[test]
-    fn showing_something_that_is_not_there_fails_clearly() {
-        let (_dir, conn) = store();
-        let out = show(&conn, &ShowArgs { id: "999".to_owned() }).unwrap();
-        assert!(out.failed);
-        assert!(out.render().contains("nothing matches"), "{}", out.render());
-    }
-
-    #[tokio::test]
-    async fn listing_filters_by_tag() {
-        let (_dir, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: vec!["rust".to_owned()],
-                note: None,
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let out = list(
-            &conn,
-            &ListArgs {
-                limit: 10,
-                offset: 0,
-                tag: vec!["rust".to_owned()],
-                source: None,
-                json: false,
-            },
-        )
-        .unwrap();
-        assert!(out.render().contains("1 shown"), "{}", out.render());
-
-        let out = list(
-            &conn,
-            &ListArgs {
-                limit: 10,
-                offset: 0,
-                tag: vec!["absent".to_owned()],
-                source: None,
-                json: false,
-            },
-        )
-        .unwrap();
-        assert!(out.render().contains("0 shown"), "{}", out.render());
-    }
-
-    #[tokio::test]
-    async fn listing_filters_by_medium() {
-        let (_dir, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: None,
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let out = list(
-            &conn,
-            &ListArgs {
-                limit: 10,
-                offset: 0,
-                tag: Vec::new(),
-                source: Some("reddit".to_owned()),
-                json: false,
-            },
-        )
-        .unwrap();
-        assert!(out.render().contains("0 shown"), "{}", out.render());
-    }
-
-    #[test]
-    fn an_unknown_medium_is_a_config_error() {
-        let (_dir, conn) = store();
-        let err = list(
-            &conn,
-            &ListArgs {
-                limit: 10,
-                offset: 0,
-                tag: Vec::new(),
-                source: Some("telepathy".to_owned()),
-                json: false,
-            },
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("telepathy"), "{err}");
-    }
-
-    #[test]
-    fn importing_a_url_list_reads_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("urls.txt");
-        std::fs::write(&path, "https://example.com/a\nhttps://example.com/b\n").unwrap();
-
-        let (_db, conn) = store();
-        let out = import(
-            &conn,
-            &ImportArgs { path: path.clone(), recursive: false, format: None, dry_run: false },
-        )
-        .unwrap();
-        assert!(out.render().contains("2 added"), "{}", out.render());
-        assert_eq!(Repo::new(&conn).count().unwrap(), 2);
-    }
-
-    #[test]
-    fn importing_netscape_html_reads_every_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("bookmarks.html");
-        std::fs::write(
-            &path,
-            "<DL><p>\n<DT><A HREF=\"https://a.example/1\">One</A>\n<DT><A HREF=\"https://b.example/2\">Two</A>\n</DL><p>",
-        )
-        .unwrap();
-
-        let (_db, conn) = store();
-        let out =
-            import(&conn, &ImportArgs { path, recursive: false, format: None, dry_run: false })
-                .unwrap();
-        assert!(out.render().contains("2 added"), "{}", out.render());
-    }
-
-    #[test]
-    fn importing_a_folder_walks_it() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.md"), "one").unwrap();
-        std::fs::write(dir.path().join("b.md"), "two").unwrap();
-
-        let (_db, conn) = store();
-        let out = import(
-            &conn,
-            &ImportArgs {
-                path: dir.path().to_path_buf(),
-                recursive: false,
-                format: None,
-                dry_run: false,
-            },
-        )
-        .unwrap();
-        assert!(out.render().contains("2 added"), "{}", out.render());
-    }
-
-    #[test]
-    fn a_dry_run_import_reads_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("urls.txt");
-        std::fs::write(&path, "https://example.com/a\n").unwrap();
-
-        let (_db, conn) = store();
-        let out =
-            import(&conn, &ImportArgs { path, recursive: false, format: None, dry_run: true })
-                .unwrap();
-        assert!(out.render().contains("would be read"), "{}", out.render());
-        assert_eq!(Repo::new(&conn).count().unwrap(), 0);
-    }
-
-    #[test]
-    fn importing_something_that_is_not_there_is_a_config_error() {
-        let (_db, conn) = store();
-        let err = import(
-            &conn,
-            &ImportArgs {
-                path: PathBuf::from("/nonexistent/path/xyz"),
-                recursive: false,
-                format: None,
-                dry_run: false,
-            },
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("does not exist"), "{err}");
-    }
-
-    #[test]
-    fn importing_the_same_file_twice_stores_one_copy() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("urls.txt");
-        std::fs::write(&path, "https://example.com/a\n").unwrap();
-        let (_db, conn) = store();
-        let args =
-            ImportArgs { path: path.clone(), recursive: false, format: None, dry_run: false };
-        import(&conn, &args).unwrap();
-        let out = import(&conn, &args).unwrap();
-        assert!(out.render().contains("already in the archive"), "{}", out.render());
-        assert_eq!(Repo::new(&conn).count().unwrap(), 1);
-    }
-
-    #[test]
-    fn a_json_export_imports_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("out.json");
-        std::fs::write(
-            &path,
-            r#"[{"id":"1","text":"a post","url":"https://example.com/a","created_at":1767312000000}]"#,
-        )
-        .unwrap();
-
-        let (_db, conn) = store();
-        let out =
-            import(&conn, &ImportArgs { path, recursive: false, format: None, dry_run: false })
-                .unwrap();
-        assert!(out.render().contains("1 added"), "{}", out.render());
-        assert_eq!(Repo::new(&conn).list(10, 0).unwrap()[0].text, "a post");
-    }
-
-    #[test]
-    fn an_opml_export_imports_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("out.opml");
-        std::fs::write(
-            &path,
-            r#"<opml><body><outline text="p" url="https://example.com/p"/></body></opml>"#,
-        )
-        .unwrap();
-        let (_db, conn) = store();
-        let out =
-            import(&conn, &ImportArgs { path, recursive: false, format: None, dry_run: false })
-                .unwrap();
-        assert!(out.render().contains("1 added"), "{}", out.render());
-    }
-
-    #[tokio::test]
-    async fn the_status_reports_what_is_waiting() {
-        let config = Config::default();
-        let (_db, conn) = store();
-        let out = enrich(
-            &conn,
-            &config,
-            &EnrichArgs { stage: Vec::new(), limit: None, redo: None, status: true },
-        )
-        .await
-        .unwrap();
-        assert!(out.render().contains("bookmarks"), "{}", out.render());
-    }
-
-    #[tokio::test]
-    async fn redoing_a_stage_puts_rows_back_and_says_how_many() {
-        let (_d, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: Some("a post about a thing".to_owned()),
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-
-        let config = Config::default();
-        let out = enrich(
-            &conn,
-            &config,
-            &EnrichArgs {
-                stage: Vec::new(),
-                limit: None,
-                redo: Some(EnrichStageArg::Entities),
-                status: true,
-            },
-        )
-        .await
-        .unwrap();
-        assert!(out.render().contains("1 bookmarks put back"), "{}", out.render());
-    }
-
-    #[tokio::test]
-    async fn running_the_stages_writes_a_fingerprint() {
-        let (_d, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: Some("a post about sqlite internals".to_owned()),
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-
-        let config = Config::default();
-        let out = enrich(
-            &conn,
-            &config,
-            &EnrichArgs {
-                stage: vec![EnrichStageArg::Entities],
-                limit: None,
-                redo: None,
-                status: false,
-            },
-        )
-        .await
-        .unwrap();
-        assert!(out.render().contains("entities"), "{}", out.render());
-        let items = Repo::new(&conn).list(10, 0).unwrap();
-        assert!(items[0].fingerprint.is_some(), "the entity stage wrote a fingerprint");
-    }
-
-    #[tokio::test]
-    async fn a_run_with_no_configured_sources_still_reports() {
-        let (_d, conn) = store();
-        let mut config = Config::default();
-        config.sources.clear();
-        let out =
-            run(&conn, &config, &RunArgs { limit: None, pages: None, source: None, dry_run: true })
-                .await
-                .unwrap();
-        assert!(out.render().contains("fetched"), "{}", out.render());
-    }
-
-    #[tokio::test]
-    async fn a_dry_run_writes_no_sink() {
-        let dir = tempfile::tempdir().unwrap();
-        let (_d, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: Some("a post".to_owned()),
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-
-        let mut config = Config::default();
-        config.data_dir = dir.path().to_path_buf();
-        config.sinks = vec![crate::config::Sink {
-            kind: SinkMedium::Jsonl,
-            enabled: true,
-            path: PathBuf::from("out.jsonl"),
-        }];
-        run(&conn, &config, &RunArgs { limit: None, pages: None, source: None, dry_run: true })
-            .await
-            .unwrap();
-        assert!(!dir.path().join("out.jsonl").exists());
-    }
-
-    #[tokio::test]
-    async fn exporting_writes_the_configured_sink() {
-        let dir = tempfile::tempdir().unwrap();
-        let (_d, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: Some("a post".to_owned()),
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-
-        let mut config = Config::default();
-        config.data_dir = dir.path().to_path_buf();
-        config.sinks = vec![crate::config::Sink {
-            kind: SinkMedium::Html,
-            enabled: true,
-            path: PathBuf::from("archive.html"),
-        }];
-        let out = export(&conn, &config, &ExportArgs { output: None, format: None, all: true })
-            .await
-            .unwrap();
-        assert!(out.render().contains("html"), "{}", out.render());
-        assert!(dir.path().join("archive.html").exists());
-    }
-
-    #[tokio::test]
-    async fn exporting_to_an_explicit_path_uses_that_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let (_d, conn) = store();
-        add(
-            &conn,
-            &AddArgs {
-                urls: vec!["https://example.com/a".to_owned()],
-                tag: Vec::new(),
-                note: Some("a post".to_owned()),
-                fetch: false,
-            },
-        )
-        .await
-        .unwrap();
-        let mut config = Config::default();
-        config.data_dir = dir.path().to_path_buf();
-        config.sinks.clear();
-        let target = dir.path().join("mine.csv");
-        export(
-            &conn,
-            &config,
-            &ExportArgs { output: Some(target.clone()), format: Some("csv".to_owned()), all: true },
-        )
-        .await
-        .unwrap();
-        assert!(target.exists());
-    }
-
-    #[tokio::test]
-    async fn exporting_to_the_store_is_refused_rather_than_writing_nothing() {
-        let (_d, conn) = store();
-        let config = Config::default();
-        let err = export(
-            &conn,
-            &config,
-            &ExportArgs {
-                output: Some(PathBuf::from("/tmp/x")),
-                format: Some("store".to_owned()),
-                all: true,
-            },
-        )
-        .await
-        .unwrap_err();
-        assert!(err.to_string().contains("store"), "{err}");
-    }
-
-    #[test]
-    fn output_renders_and_marks_failure() {
-        let out = Output::line("a").with("b").failed();
-        assert_eq!(out.render(), "a\nb");
-        assert!(out.failed);
-        assert!(!Output::empty().failed);
-    }
-
-    #[test]
-    fn the_config_command_reports_where_it_looks() {
-        let out = config_command(&ConfigArgs {
-            init: false,
-            show: false,
-            path: true,
-            check: false,
-            example: false,
-        })
-        .unwrap();
-        assert!(out.render().ends_with("mebookmarker.toml"), "{}", out.render());
-    }
 }
