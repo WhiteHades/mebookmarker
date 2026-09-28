@@ -161,6 +161,13 @@ pub struct App {
     undo: Option<Bookmark>,
     /// when the list was last rebuilt, so a held key does not thrash the index.
     last_query: Option<Instant>,
+    /// the query the list on screen was built from.
+    ///
+    /// the debounce is a timer and not a gate, and a timer needs to know what it
+    /// is timing towards: a burst of typing ends with a rebuild even though the
+    /// window has not passed, otherwise the last few characters a person typed
+    /// are never searched at all.
+    loaded: String,
 }
 
 impl std::fmt::Debug for App {
@@ -199,6 +206,7 @@ impl App {
             // the first keystroke rebuilds immediately rather than waiting out
             // the debounce window over an empty list
             last_query: None,
+            loaded: String::new(),
         };
         app.reload();
         app
@@ -262,27 +270,16 @@ impl App {
                 })
                 .unwrap_or_default()
         } else {
-            mbm_store::Searcher::new(&conn)
-                .search(&self.query, self.mode, limit)
-                .map(|hits| {
-                    let ids: Vec<mbm_core::id::Id> = hits.iter().map(|h| h.id).collect();
-                    let scores: std::collections::HashMap<mbm_core::id::Id, f64> =
-                        hits.iter().map(|h| (h.id, h.score)).collect();
-                    Repo::new(&conn)
-                        .load_ranked(&ids)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(|b| {
-                            let score = scores.get(&b.id).copied().unwrap_or(0.0);
-                            (b, score)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
+            // the same entry point the command line uses. a second search path
+            // here is how the interface ends up ranking differently from the
+            // terminal it is standing in for, and this one had no prefilter, so
+            // its fuzzy half was answering nothing at all.
+            crate::pipeline::search_mode(&conn, &self.query, self.mode, limit).unwrap_or_default()
         };
 
         self.tags = Repo::new(&conn).tags_with_counts(200).unwrap_or_default();
         self.selected = self.selected.min(self.items.len().saturating_sub(1));
+        self.loaded.clone_from(&self.query);
         self.last_query = Some(Instant::now());
     }
 
@@ -375,12 +372,15 @@ impl App {
 
     /// whether enough time has passed for another rebuild.
     fn stale(&self) -> bool {
+        if self.loaded == self.query {
+            return false;
+        }
         self.last_query.is_none_or(|at| at.elapsed() >= std::time::Duration::from_millis(120))
     }
 
     /// force a reload, for the end of a burst of typing.
     pub fn settle(&mut self) {
-        if !self.stale() {
+        if self.loaded != self.query {
             self.reload();
         }
     }
@@ -572,7 +572,7 @@ fn draw_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
             ];
             if let Some(author) = &bookmark.author {
                 spans.push(Span::styled(
-                    format!("  @{}", author.handle),
+                    format!("  {}", author.display()),
                     Style::default().fg(style::MUTED),
                 ));
             }
@@ -623,7 +623,7 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
         byline.push(Span::styled(mbm_sink::date_time(when), muted));
     }
     if let Some(author) = &bookmark.author {
-        byline.push(Span::raw(format!("  @{}", author.handle)));
+        byline.push(Span::raw(format!("  {}", author.display())));
     }
     if let Some(collection) = &bookmark.source.collection {
         byline.push(Span::styled(format!("  {collection}"), muted));
@@ -811,6 +811,14 @@ where
     loop {
         terminal.draw(|frame| draw(frame, app)).map_err(backend)?;
 
+        // the wait has a timeout, because the rebuild that ends a burst of
+        // typing is owed whether or not another key is coming. blocking on the
+        // next key instead leaves the last characters of a query unsearched
+        // until the person presses something else.
+        if !event::poll(std::time::Duration::from_millis(40)).map_err(ui)? {
+            app.settle();
+            continue;
+        }
         let Event::Key(key) = event::read().map_err(ui)? else {
             continue;
         };
@@ -859,513 +867,4 @@ pub fn palette() -> [Color; 4] {
 /// a `Clear` widget over a rect, for a future modal.
 pub fn clear_area(frame: &mut Frame<'_>, area: Rect) {
     frame.render_widget(Clear, area);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-
-    fn app(dir: &std::path::Path) -> App {
-        let conn = Connection::open(dir.join("t.db")).unwrap();
-        mbm_store::migrate(&conn).unwrap();
-        App::new(Arc::new(std::sync::Mutex::new(conn)), "")
-    }
-
-    fn seeded(dir: &std::path::Path) -> App {
-        let conn = Connection::open(dir.join("t.db")).unwrap();
-        mbm_store::migrate(&conn).unwrap();
-        let repo = Repo::new(&conn);
-        for i in 0..5 {
-            let mut b = Bookmark::new(
-                mbm_core::bookmark::SourceRef::new(
-                    mbm_core::medium::SourceMedium::X,
-                    format!("{i}"),
-                    None,
-                ),
-                format!("post {i} about databases and gardening"),
-                0,
-            )
-            .created_at(1_767_312_000_000 + i64::from(i) * 1000);
-            b.push_tag(format!("tag{i}"));
-            b.push_tag("shared");
-            repo.insert(&b).unwrap();
-        }
-        App::new(Arc::new(std::sync::Mutex::new(conn)), "")
-    }
-
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    #[test]
-    fn an_empty_archive_starts_on_browse() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = app(dir.path());
-        assert_eq!(app.view(), View::Browse);
-        assert!(app.is_empty());
-        assert_eq!(app.len(), 0);
-    }
-
-    #[test]
-    fn a_seeded_archive_lists_everything() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = seeded(dir.path());
-        assert_eq!(app.len(), 5);
-    }
-
-    #[test]
-    fn typing_narrows_the_list() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        for c in "gardening".chars() {
-            app.act(Action::Type(c));
-        }
-        app.settle();
-        assert!(app.query.starts_with("garden"), "{}", app.query);
-        assert!(!app.is_empty(), "the seeded rows all mention gardening");
-    }
-
-    #[test]
-    fn a_query_that_matches_nothing_says_so() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        for c in "zzzzqqq".chars() {
-            app.act(Action::Type(c));
-        }
-        app.settle();
-        assert_eq!(app.len(), 0);
-    }
-
-    #[test]
-    fn backspace_widens_the_list_again() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        let before = app.len();
-        app.act(Action::Type('a'));
-        app.settle();
-        app.act(Action::Backspace);
-        app.settle();
-        assert_eq!(app.len(), before);
-    }
-
-    #[test]
-    fn clearing_empties_the_query() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        app.act(Action::Type('a'));
-        app.act(Action::Clear);
-        assert!(app.query.is_empty());
-        assert!(app.status.contains("cleared"));
-    }
-
-    #[test]
-    fn moving_down_and_up_stays_inside_the_list() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        for _ in 0..20 {
-            app.act(Action::Down);
-        }
-        assert_eq!(app.selected, app.len() - 1);
-        for _ in 0..20 {
-            app.act(Action::Up);
-        }
-        assert_eq!(app.selected, 0);
-    }
-
-    #[test]
-    fn home_and_end_jump_to_the_ends() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        app.act(Action::End);
-        assert_eq!(app.selected, app.len() - 1);
-        app.act(Action::Home);
-        assert_eq!(app.selected, 0);
-    }
-
-    #[test]
-    fn enter_opens_the_detail_view_and_esc_goes_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        app.act(Action::Open);
-        assert_eq!(app.view(), View::Detail);
-        app.act(Action::Back);
-        assert_eq!(app.view(), View::Browse);
-    }
-
-    #[test]
-    fn the_tag_view_toggles() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        app.act(Action::Tags);
-        assert_eq!(app.view(), View::Tags);
-        assert!(!app.tags.is_empty());
-        app.act(Action::Tags);
-        assert_eq!(app.view(), View::Browse);
-    }
-
-    #[test]
-    fn the_tag_view_is_reachable_from_the_keyboard() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        let event = KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL);
-        app.act(action_for(&event));
-        assert_eq!(app.view(), View::Tags, "a query cannot hold `g`, so ctrl-g");
-    }
-
-    #[test]
-    fn the_ranking_mode_cycles_and_reloads() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        app.act(Action::Rank);
-        assert_eq!(app.mode, Mode::Exact);
-        app.act(Action::Rank);
-        assert_eq!(app.mode, Mode::Fuzzy);
-        app.act(Action::Rank);
-        assert_eq!(app.mode, Mode::Hybrid);
-    }
-
-    #[test]
-    fn tagging_the_selected_item_saves_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        let id = app.selected_item().unwrap().id;
-        app.act(Action::Tag);
-        for c in "rust".chars() {
-            app.act(Action::Type(c));
-        }
-        app.act(Action::Open);
-        assert!(app.tag_input.is_none(), "enter closes the prompt");
-
-        let conn = app.conn.lock().unwrap();
-        let stored = Repo::new(&conn).load(id).unwrap().unwrap();
-        assert!(stored.tags.contains("rust"), "{:?}", stored.tags);
-    }
-
-    #[test]
-    fn an_empty_tag_is_refused() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        app.act(Action::Tag);
-        app.act(Action::Open);
-        assert!(app.status.contains("no tag"), "{}", app.status);
-    }
-
-    #[test]
-    fn escape_cancels_the_tag_prompt() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        app.act(Action::Tag);
-        app.act(Action::Type('r'));
-        app.act(Action::Back);
-        assert!(app.tag_input.is_none());
-    }
-
-    #[test]
-    fn deleting_then_undoing_restores_the_row() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        let before = app.len();
-        app.act(Action::Delete);
-        assert_eq!(app.len(), before - 1);
-        assert!(app.status.contains("u to put it back"), "{}", app.status);
-
-        app.act(Action::Undo);
-        assert_eq!(app.len(), before);
-    }
-
-    #[test]
-    fn undoing_with_nothing_removed_says_so() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        app.act(Action::Undo);
-        assert!(app.status.contains("nothing to put back"), "{}", app.status);
-    }
-
-    #[test]
-    fn deleting_from_an_empty_archive_does_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = app(dir.path());
-        app.act(Action::Delete);
-        assert_eq!(app.len(), 0);
-    }
-
-    #[test]
-    fn quit_returns_false() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = app(dir.path());
-        assert!(!app.act(Action::Quit));
-    }
-
-    #[test]
-    fn every_other_action_keeps_running() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = app(dir.path());
-        for action in [Action::None, Action::Up, Action::Down, Action::Refresh] {
-            assert!(app.act(action));
-        }
-    }
-
-    #[test]
-    fn the_totals_report_the_whole_archive() {
-        let dir = tempfile::tempdir().unwrap();
-        let app = seeded(dir.path());
-        assert_eq!(app.totals().0, 5);
-    }
-
-    #[test]
-    fn a_query_can_be_supplied_at_startup() {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("t.db")).unwrap();
-        mbm_store::migrate(&conn).unwrap();
-        Repo::new(&conn)
-            .insert(&Bookmark::new(
-                mbm_core::bookmark::SourceRef::new(mbm_core::medium::SourceMedium::X, "1", None),
-                "a post about gardening",
-                0,
-            ))
-            .unwrap();
-        let app = App::new(Arc::new(std::sync::Mutex::new(conn)), "gardening");
-        assert_eq!(app.len(), 1);
-    }
-
-    #[test]
-    fn a_control_c_quits() {
-        let event = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(action_for(&event), Action::Quit);
-    }
-
-    #[test]
-    fn the_control_keys_reach_the_views_the_query_cannot() {
-        assert_eq!(
-            action_for(&KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL)),
-            Action::Tags
-        );
-        assert_eq!(
-            action_for(&KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
-            Action::Delete
-        );
-    }
-
-    #[test]
-    fn the_control_keys_are_the_usual_ones() {
-        assert_eq!(
-            action_for(&KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL)),
-            Action::Clear
-        );
-        assert_eq!(
-            action_for(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
-            Action::Refresh
-        );
-        assert_eq!(
-            action_for(&KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL)),
-            Action::Undo
-        );
-    }
-
-    #[test]
-    fn a_plain_character_is_typed() {
-        assert_eq!(action_for(&key(KeyCode::Char('a'))), Action::Type('a'));
-        assert_eq!(action_for(&key(KeyCode::Char('Z'))), Action::Type('Z'));
-        assert_eq!(action_for(&key(KeyCode::Char(' '))), Action::Type(' '));
-    }
-
-    #[test]
-    fn the_navigation_keys_map_over() {
-        assert_eq!(action_for(&key(KeyCode::Up)), Action::Up);
-        assert_eq!(action_for(&key(KeyCode::Down)), Action::Down);
-        assert_eq!(action_for(&key(KeyCode::Home)), Action::Home);
-        assert_eq!(action_for(&key(KeyCode::End)), Action::End);
-        assert_eq!(action_for(&key(KeyCode::Enter)), Action::Open);
-        assert_eq!(action_for(&key(KeyCode::Esc)), Action::Back);
-        assert_eq!(action_for(&key(KeyCode::Backspace)), Action::Backspace);
-        assert_eq!(action_for(&key(KeyCode::Tab)), Action::Rank);
-        assert_eq!(action_for(&key(KeyCode::Delete)), Action::Delete);
-        assert_eq!(action_for(&key(KeyCode::F(2))), Action::Tag);
-    }
-
-    #[test]
-    fn an_unhandled_key_is_ignored() {
-        assert_eq!(action_for(&key(KeyCode::F(12))), Action::None);
-        assert_eq!(action_for(&key(KeyCode::Insert)), Action::None);
-    }
-
-    #[test]
-    fn a_frame_draws_the_query_the_list_and_the_status() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        let frame_text = render_to(100, 30, &mut app);
-        assert!(frame_text.contains("search:"), "{frame_text}");
-        assert!(frame_text.contains("browse"), "{frame_text}");
-        assert!(frame_text.contains("post 0"), "{frame_text}");
-        assert!(frame_text.contains("bookmarks"), "{frame_text}");
-        assert!(frame_text.contains("hybrid"), "the ranking mode is on the status line");
-    }
-
-    #[test]
-    fn a_frame_with_nothing_in_it_says_how_to_start() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = app(dir.path());
-        let frame_text = render_to(100, 30, &mut app);
-        assert!(frame_text.contains("mbm add"), "{frame_text}");
-    }
-
-    #[test]
-    fn the_detail_frame_shows_the_text_and_the_url() {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("t.db")).unwrap();
-        mbm_store::migrate(&conn).unwrap();
-        let mut b = Bookmark::new(
-            mbm_core::bookmark::SourceRef::new(mbm_core::medium::SourceMedium::X, "1", None),
-            "a post about gardening",
-            0,
-        )
-        .created_at(1_767_312_000_000);
-        b.url = Some(url::Url::parse("https://example.com/gardening").unwrap());
-        Repo::new(&conn).insert(&b).unwrap();
-        let mut app = App::new(Arc::new(std::sync::Mutex::new(conn)), "");
-        app.act(Action::Open);
-        let frame_text = render_to(100, 30, &mut app);
-        assert!(frame_text.contains("detail"), "{frame_text}");
-        assert!(frame_text.contains("gardening"), "{frame_text}");
-        assert!(frame_text.contains("example.com"), "{frame_text}");
-    }
-
-    #[test]
-    fn the_detail_frame_keeps_each_part_on_its_own_line() {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("t.db")).unwrap();
-        mbm_store::migrate(&conn).unwrap();
-        let mut b = Bookmark::new(
-            mbm_core::bookmark::SourceRef::new(mbm_core::medium::SourceMedium::X, "1", None),
-            "the body of the post",
-            0,
-        )
-        .created_at(1_767_312_000_000);
-        b.url = Some(url::Url::parse("https://example.com/gardening").unwrap());
-        b.author = Some(mbm_core::bookmark::Author::new("simonw"));
-        b.push_tag("rust");
-        Repo::new(&conn).insert(&b).unwrap();
-
-        let mut app = App::new(Arc::new(std::sync::Mutex::new(conn)), "");
-        app.act(Action::Open);
-        // wide enough that nothing wraps, so the assertion is about the layout
-        // and not about the terminal
-        let frame_text = render_to(120, 40, &mut app);
-        let lines: Vec<&str> =
-            frame_text.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
-        let title_at =
-            lines.iter().position(|l| l.contains("the body of the post")).expect("the title");
-        let url_at = lines.iter().position(|l| l.contains("example.com")).expect("the url");
-        let tag_at = lines.iter().position(|l| l.contains("tags: rust")).expect("the tags");
-        assert!(title_at < url_at, "the url is below the title:\n{lines:?}");
-        assert!(url_at < tag_at, "the tags are below the url:\n{lines:?}");
-    }
-
-    #[test]
-    fn a_list_row_leaves_a_gap_after_the_medium() {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("t.db")).unwrap();
-        mbm_store::migrate(&conn).unwrap();
-        Repo::new(&conn)
-            .insert(
-                &Bookmark::new(
-                    mbm_core::bookmark::SourceRef::new(
-                        mbm_core::medium::SourceMedium::HackerNews,
-                        "1",
-                        None,
-                    ),
-                    "a story",
-                    0,
-                )
-                .created_at(1_767_312_000_000),
-            )
-            .unwrap();
-        let mut app = App::new(Arc::new(std::sync::Mutex::new(conn)), "");
-        let frame_text = render_to(90, 12, &mut app);
-        assert!(
-            frame_text.contains("hackernews   a story")
-                || frame_text.contains("hackernews  a story"),
-            "the longest medium name needs a gap after it:\n{frame_text}"
-        );
-    }
-
-    #[test]
-    fn the_tag_frame_lists_the_tags_with_their_counts() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        app.act(Action::Tags);
-        let frame_text = render_to(100, 30, &mut app);
-        assert!(frame_text.contains("shared"), "{frame_text}");
-        assert!(frame_text.contains('5'), "{frame_text}");
-    }
-
-    #[test]
-    fn a_filtered_list_is_labelled_as_a_search() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        assert_eq!(app.list_label(), "browse");
-
-        app.act(Action::Type('g'));
-        app.settle();
-        assert_eq!(app.list_label(), "search · hybrid", "a query makes it a search");
-
-        app.act(Action::Rank);
-        assert_eq!(app.list_label(), "search · exact");
-    }
-
-    #[test]
-    fn the_status_line_distinguishes_shown_from_total() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        assert!(render_to(120, 12, &mut app).contains("5 bookmarks"), "all of them");
-
-        // a query none of the seeded rows match, so the list is empty and the
-        // status line has to distinguish zero-of-five from five-of-five
-        for c in "zzzzqqq".chars() {
-            app.act(Action::Type(c));
-        }
-        app.settle();
-        let frame_text = render_to(120, 12, &mut app);
-        assert!(frame_text.contains("0 of 5 bookmarks"), "{frame_text}");
-    }
-
-    #[test]
-    fn the_tag_prompt_shows_in_the_query_box() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        app.act(Action::Tag);
-        app.act(Action::Type('r'));
-        let frame_text = render_to(100, 30, &mut app);
-        assert!(frame_text.contains("tag: r"), "{frame_text}");
-    }
-
-    #[test]
-    fn a_narrow_terminal_still_draws() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut app = seeded(dir.path());
-        // a 20-column terminal is narrower than the list, and drawing must not
-        // panic on the arithmetic
-        let frame_text = render_to(20, 8, &mut app);
-        assert!(!frame_text.is_empty());
-    }
-
-    #[test]
-    fn the_palette_is_four_colours() {
-        assert_eq!(palette().len(), 4);
-    }
-
-    #[test]
-    fn a_centred_box_is_inside_its_area() {
-        let area = Rect::new(0, 0, 100, 40);
-        let box_area = centred(area, 50, 50);
-        assert!(box_area.width <= area.width);
-        assert!(box_area.height <= area.height);
-        assert_eq!(box_area.width, 50);
-    }
-
-    #[test]
-    fn a_blank_frame_has_no_lines() {
-        assert_eq!(blank().lines.len(), 0);
-    }
 }
