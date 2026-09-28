@@ -105,6 +105,9 @@ pub enum Command {
     /// read and write the configuration.
     Config(ConfigArgs),
 
+    /// delete the store and build it again from the sources.
+    Rebuild(RebuildArgs),
+
     /// the interactive browser.
     Tui(TuiArgs),
 }
@@ -355,6 +358,18 @@ pub struct ConfigArgs {
     /// write a portable example into the current directory.
     #[arg(long)]
     pub example: bool,
+}
+
+/// rebuild the store from scratch.
+#[derive(Debug, Args)]
+pub struct RebuildArgs {
+    /// say what would be deleted, delete nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+
+    /// delete the store without fetching anything.
+    #[arg(long, conflicts_with = "dry_run")]
+    pub only: bool,
 }
 
 /// the interactive browser.
@@ -793,6 +808,42 @@ pub async fn export(conn: &Connection, config: &Config, args: &ExportArgs) -> Re
         out = out.with(format!("{name}: {} written, {} files", report.written, report.files));
     }
     Ok(out)
+}
+
+/// delete the store and fetch it again.
+///
+/// the store is derived data, so this is always a correct way to recover from a
+/// store that is wrong, damaged, or written by a build that has since changed.
+pub async fn rebuild(conn: &Connection, config: &Config, args: &RebuildArgs) -> Result<Output> {
+    let before = mbm_store::schema::size_on_disk(conn).unwrap_or(0);
+    if args.dry_run {
+        return Ok(Output::line(format!(
+            "{} would be deleted ({} bytes), and refetched from {} sources",
+            config.database().display(),
+            before,
+            config.enabled_sources().len()
+        )));
+    }
+
+    mbm_store::schema::reindex(conn)?;
+    let _ = before;
+
+    if args.only {
+        crate::pipeline::reset(config)?;
+        return Ok(Output::line(format!(
+            "deleted {}; the next run will build it again",
+            config.database().display()
+        )));
+    }
+
+    crate::pipeline::reset(config)?;
+    let fresh = crate::pipeline::open(config)?;
+    let job = Job::full(config, &fresh)?;
+    let report = crate::pipeline::run(&fresh, config, &job).await?;
+    Ok(Output::line(format!(
+        "rebuilt: {}",
+        report.line()
+    )))
 }
 
 fn build_one_sink(kind: SinkMedium, path: PathBuf) -> Result<Arc<dyn mbm_core::port::Sink>> {
