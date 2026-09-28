@@ -206,7 +206,7 @@ fn draw_list(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         .collect();
 
     let inner = area.height as usize;
-    let offset = window_offset(app.selected, app.items.len(), inner);
+    let offset = app.window_offset();
     let mut paragraph = Paragraph::new(Text::from(lines)).style(Style::default().bg(theme.bg_page));
     paragraph = paragraph.scroll((offset as u16, 0));
     frame.render_widget(paragraph, area);
@@ -310,17 +310,6 @@ impl Columns {
             author_width: author_width - 1,
         }
     }
-}
-
-/// the first visible row, so a selection near either end stays in view.
-///
-/// a list of 500 rows has no scrollbar the mouse can use here, so the keyboard
-/// is the only way to move and the window has to follow it.
-fn window_offset(selected: usize, total: usize, height: usize) -> usize {
-    if total <= height {
-        return 0;
-    }
-    selected.saturating_sub(height / 2).min(total - height)
 }
 
 /// lay a row out from its column positions, filling the gaps with spaces.
@@ -498,7 +487,15 @@ fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme, moti
         )));
         body.push(Line::default());
     }
+    // a title that is the body's own first line is not shown twice. an item
+    // saved from the command line has both, because that is all it was given,
+    // and printing the same sentence under itself tells the reader nothing
+    let title = mbm_sink::display_title(bookmark);
+    let text_is_the_title = bookmark.text.trim() == title.trim();
     for line in bookmark.text.lines() {
+        if text_is_the_title && line.trim() == title.trim() {
+            continue;
+        }
         body.push(Line::from(Span::styled(
             line.to_owned(),
             Style::default().fg(theme.text_primary),
@@ -648,8 +645,7 @@ fn draw_tags(frame: &mut Frame<'_>, area: Rect, app: &App, theme: &Theme) {
         .collect();
     let _ = count_at;
 
-    let inner = area.height as usize;
-    let offset = window_offset(app.selected, app.items.len().max(app.tags.len()), inner);
+    let offset = app.window_offset();
     let mut paragraph = Paragraph::new(Text::from(lines)).style(Style::default().bg(theme.bg_page));
     paragraph = paragraph.scroll((offset as u16, 0));
     frame.render_widget(paragraph, area);
