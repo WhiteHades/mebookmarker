@@ -105,6 +105,34 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// the palette for a terminal that will not draw colour.
+    ///
+    /// `NO_COLOR` does not get a greyscale theme. a terminal that answers it is
+    /// drawing its own sixteen colours, and the one thing a program must never
+    /// do there is paint a background it does not own or set a foreground to a
+    /// value that is not in the terminal's palette. so every role goes to a
+    /// colour the terminal already has, and only weight and a bar carry meaning.
+    #[must_use]
+    pub const fn no_colour() -> Self {
+        Self {
+            appearance: Appearance::Dark,
+            bg_page: Color::Reset,
+            bg_surface: Color::Reset,
+            bg_selected: Color::Reset,
+            bg_sunken: Color::Reset,
+            text_primary: Color::Reset,
+            text_secondary: Color::Gray,
+            text_disabled: Color::DarkGray,
+            accent: Color::Gray,
+            accent_text: Color::White,
+            border: Color::DarkGray,
+            border_focus: Color::Gray,
+            danger: Color::Red,
+            warning: Color::Yellow,
+            success: Color::Green,
+        }
+    }
+
     /// the palette for an appearance.
     ///
     /// the values are the output of a ramp generated in a perceptual space and
@@ -234,7 +262,7 @@ pub fn lightness_contrast(text: Color, background: Color, size: TextSize, weight
     let (br, bg, bb) = to_rgb(background);
 
     let to_y = |c: [f64; 3]| {
-        0.2126729 * c[0].powf(2.4) + 0.7151522 * c[1].powf(2.4) + 0.0721750 * c[2].powf(2.4)
+        0.212_672_9 * c[0].powf(2.4) + 0.715_152_2 * c[1].powf(2.4) + 0.072_175_0 * c[2].powf(2.4)
     };
     let ty = to_y([tr, tg, tb]);
     let by = to_y([br, bg, bb]);
@@ -314,64 +342,58 @@ impl Weight {
     }
 }
 
-/// a terminal's background, and the appearance it implies.
+/// the appearance the terminal is already in.
 ///
-/// the query is an OSC 11 request and the answer is either an `rgb:` triple or
-/// nothing at all. terminals that will not answer are common and not a fault,
-/// so the caller falls back rather than hanging.
-pub fn terminal_background() -> Option<(u8, u8, u8)> {
-    use std::io::{Read, Write};
-
-    // a terminal that does not answer must not hold the program, and the read
-    // below is blocking, so the whole exchange runs on its own thread with a
-    // deadline. a raw-mode terminal is already in raw mode by this point.
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut out = std::io::stdout();
-        let _ = out.write_all(b"\x1b]11;?\x07");
-        let _ = out.flush();
-
-        let mut answer = String::new();
-        let mut stdin = std::io::stdin();
-        let mut byte = [0u8; 1];
-        while let Ok(1) = stdin.read(&mut byte) {
-            answer.push(byte[0] as char);
-            // the reply ends with BEL, or with ST which is ESC backslash
-            if byte[0] == 0x07 || answer.ends_with("1b\\") {
-                break;
-            }
-            if answer.len() > 64 {
-                break;
-            }
-        }
-        let _ = tx.send(answer);
-    });
-
-    let answer = rx.recv_timeout(std::time::Duration::from_millis(120)).ok()?;
-    parse_osc_color(&answer)
+/// the question is which of the two palettes to draw with, and the terminal
+/// knows the answer. it also already tells us, in `COLORFGBG`, as a pair of
+/// palette indices with a `;` between them: the foreground and the background.
+///
+/// the obvious alternative is to *ask*, with an OSC 11 query and a read of the
+/// reply. that was the first version and it is a trap: the reply arrives on the
+/// same input the key handler reads, so the query needs a second reader on that
+/// input, a second reader on a blocking read cannot be cancelled, and the thread
+/// that has it is still holding the input when the timeout expires. the next
+/// keystroke is then consumed by a thread nobody is waiting for. the symptom is
+/// an interface where the first key you press does nothing.
+///
+/// reading an environment variable has none of those problems: it cannot block,
+/// it cannot consume a keystroke, and it cannot leave a thread behind.
+#[must_use]
+pub fn terminal_appearance() -> Option<Appearance> {
+    let raw = std::env::var("COLORFGBG").ok()?;
+    // the last field is the background. a terminal that reports 24-bit colour
+    // puts a very large number there instead of an index.
+    let background = raw.rsplit(';').next()?.trim();
+    let value: u32 = background.parse().ok()?;
+    Some(Appearance::from_background_index(value))
 }
 
-/// read the `rgb:RRRR/GGGG/BBBB` a terminal sends back.
-fn parse_osc_color(answer: &str) -> Option<(u8, u8, u8)> {
-    let at = answer.find("rgb:")? + 4;
-    let body = &answer[at..];
-    let end = body
-        .find(|c: char| c.is_ascii_alphabetic() || c == '\x07' || c == '\x1b')
-        .unwrap_or(body.len());
-    let mut parts = body[..end].split('/');
-    let mut out = [0u8; 3];
-    for slot in &mut out {
-        let hex = parts.next()?.trim();
-        // a terminal may answer with one, two or four digits a channel, and
-        // scaling the shorter forms up is what the spec says to do
-        *slot = match hex.len() {
-            1 => u8::from_str_radix(&hex.repeat(2), 16).ok()?,
-            2 => hex.parse().ok()?,
-            4 => u8::from_str_radix(&hex[..2], 16).ok()?,
-            _ => return None,
-        };
+impl Appearance {
+    /// read the appearance from a palette index.
+    ///
+    /// indices 0 to 6 and 8 are the dark half of the sixteen, 7 is the light
+    /// grey every terminal keeps in the middle, and 9 to 15 are the bright half.
+    /// a value above 15 is a 24-bit terminal reporting a channel count, where
+    /// anything under half is a dark background and the rest is light.
+    #[must_use]
+    pub fn from_background_index(index: u32) -> Self {
+        if index > 15 {
+            return if index < 128 { Self::Dark } else { Self::Light };
+        }
+        match index {
+            0..=6 | 8 => Self::Dark,
+            _ => Self::Light,
+        }
     }
-    Some((out[0], out[1], out[2]))
+}
+
+/// whether a background colour is light, by its own value.
+///
+/// this is what an override that names a colour rather than an appearance needs,
+/// and it is the same question [`Appearance::from_background`] asks.
+#[must_use]
+pub fn background_is_light(rgb: (u8, u8, u8)) -> bool {
+    Appearance::from_background(rgb).is_light()
 }
 
 // ─── the ramp ───────────────────────────────────────────────────────────────
@@ -387,41 +409,51 @@ fn parse_osc_color(answer: &str) -> Option<(u8, u8, u8)> {
 /// alternative is a colour library for two ramps.
 #[must_use]
 pub fn oklab_from_srgb(rgb: (u8, u8, u8)) -> [f64; 3] {
-    let [r, g, b] = [rgb.0, rgb.1, rgb.2].map(|c| {
-        let c = f64::from(c) / 255.0;
-        if c <= 0.040_45 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+    let linear = [rgb.0, rgb.1, rgb.2].map(|channel| {
+        let channel = f64::from(channel) / 255.0;
+        if channel <= 0.040_45 { channel / 12.92 } else { ((channel + 0.055) / 1.055).powf(2.4) }
     });
-    let l = 0.412_221_470_8 * r + 0.536_332_536_3 * g + 0.051_445_992_9 * b;
-    let m = 0.211_903_498_2 * r + 0.680_699_545_1 * g + 0.107_396_956_6 * b;
-    let s = 0.088_302_461_9 * r + 0.281_718_837_6 * g + 0.629_978_700_5 * b;
-    let l_ = cbrt(l);
-    let m_ = cbrt(m);
-    let s_ = cbrt(s);
+    let [red, green, blue] = linear;
+
+    // the three cone responses, which is what makes this space perceptual
+    let long = 0.412_221_470_8 * red + 0.536_332_536_3 * green + 0.051_445_992_9 * blue;
+    let medium = 0.211_903_498_2 * red + 0.680_699_545_1 * green + 0.107_396_956_6 * blue;
+    let short = 0.088_302_461_9 * red + 0.281_718_837_6 * green + 0.629_978_700_5 * blue;
+    let long = cbrt(long);
+    let medium = cbrt(medium);
+    let short = cbrt(short);
+
     [
-        0.210_454_255_3 * l_ + 0.793_617_785 * m_ - 0.004_072_046_8 * s_,
-        1.977_998_495_1 * l_ - 2.428_592_205 * m_ + 0.450_593_709_9 * s_,
-        0.025_904_037_1 * l_ + 0.782_771_766_2 * m_ - 0.808_675_766 * s_,
+        0.210_454_255_3 * long + 0.793_617_785 * medium - 0.004_072_046_8 * short,
+        1.977_998_495_1 * long - 2.428_592_205 * medium + 0.450_593_709_9 * short,
+        0.025_904_037_1 * long + 0.782_771_766_2 * medium - 0.808_675_766 * short,
     ]
 }
 
 /// oklab back to sRGB, gamma-encoded and rounded.
 #[must_use]
 pub fn srgb_from_oklab(lab: [f64; 3]) -> (u8, u8, u8) {
-    let [l, a, b] = lab;
-    let l_ = l + 0.396_337_777_4 * a + 0.215_803_757_3 * b;
-    let m_ = l - 0.105_561_345_8 * a - 0.063_854_172_8 * b;
-    let s_ = l - 0.089_484_177_5 * a - 1.291_485_548 * b;
-    let (l3, m3, s3) = (l_ * l_ * l_, m_ * m_ * m_, s_ * s_ * s_);
-    let linear = [
-        4.076_741_662_1 * l3 - 3.307_711_591_3 * m3 + 0.230_969_929_2 * s3,
-        -1.268_438_004_6 * l3 + 2.609_757_401_1 * m3 - 0.341_319_396_5 * s3,
-        -0.004_196_086_3 * l3 - 0.703_418_614_7 * m3 + 1.707_614_701 * s3,
+    let [lightness, green_red, blue_yellow] = lab;
+    let long = lightness + 0.396_337_777_4 * green_red + 0.215_803_757_3 * blue_yellow;
+    let medium = lightness - 0.105_561_345_8 * green_red - 0.063_854_172_8 * blue_yellow;
+    let short = lightness - 0.089_484_177_5 * green_red - 1.291_485_548 * blue_yellow;
+    let long = long.powi(3);
+    let medium = medium.powi(3);
+    let short = short.powi(3);
+
+    let restored = [
+        4.076_741_662_1 * long - 3.307_711_591_3 * medium + 0.230_969_929_2 * short,
+        -1.268_438_004_6 * long + 2.609_757_401_1 * medium - 0.341_319_396_5 * short,
+        -0.004_196_086_3 * long - 0.703_418_614_7 * medium + 1.707_614_701 * short,
     ];
-    linear
-        .map(|c| {
-            let c = c.clamp(0.0, 1.0);
-            let encoded =
-                if c <= 0.003_130_8 { c * 12.92 } else { 1.055 * c.powf(1.0 / 2.4) - 0.055 };
+    restored
+        .map(|channel| {
+            let channel = channel.clamp(0.0, 1.0);
+            let encoded = if channel <= 0.003_130_8 {
+                channel * 12.92
+            } else {
+                1.055 * channel.powf(1.0 / 2.4) - 0.055
+            };
             (encoded.clamp(0.0, 1.0) * 255.0).round() as u8
         })
         .into()
