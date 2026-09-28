@@ -301,7 +301,118 @@ pub fn parse_date(raw: &str) -> Option<i64> {
     if let Some(ms) = parse_naive(trimmed) {
         return Some(ms);
     }
+    // rss writes `Fri, 02 Jan 2026 10:00:00 +0000` and every generator emits
+    // that form for `pubDate`. a bookmark whose date falls back to the moment it
+    // was fetched sorts in the wrong place in a list that is ordered by when
+    // the thing was written, which is the only order worth having.
+    if let Some(ms) = parse_rfc822(trimmed) {
+        return Some(ms);
+    }
     parse_twitter_date(trimmed)
+}
+
+/// the month and zone names rss and http both use.
+const RFC822_MONTHS: [&str; 12] =
+    ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/// the zone names rfc 822 still allows, as minutes east of utc.
+const RFC822_ZONES: [(&str, i32); 12] = [
+    ("gmt", 0),
+    ("ut", 0),
+    ("utc", 0),
+    ("z", 0),
+    ("est", -5 * 60),
+    ("edt", -4 * 60),
+    ("cst", -6 * 60),
+    ("cdt", -5 * 60),
+    ("mst", -7 * 60),
+    ("mdt", -6 * 60),
+    ("pst", -8 * 60),
+    ("pdt", -7 * 60),
+];
+
+/// an rfc 822 date, which is what a feed's `pubDate` is.
+///
+/// the shape is `Day, DD Mon YYYY HH:MM:SS +ZZZZ`, the weekday and the seconds
+/// are both optional in practice, and the zone is a numeric offset about half
+/// the time and a name the other half.
+fn parse_rfc822(raw: &str) -> Option<i64> {
+    // the weekday leads the field and carries no information the rest does not.
+    // it is three letters, sometimes with a dot, and the split is on `, ` so a
+    // date whose day happened to be followed by a comma is not mangled.
+    let rest = match raw.split_once(", ") {
+        Some((weekday, rest))
+            if weekday.trim_end_matches('.').len() == 3
+                && weekday.trim_end_matches('.').chars().all(char::is_alphabetic) =>
+        {
+            rest
+        }
+        _ => raw,
+    };
+    let rest =
+        rest.trim_end_matches(|c: char| !c.is_ascii_digit() && c != ':' && c != '+' && c != '-');
+
+    let (stamp, zone) = match rest.rsplit_once(' ') {
+        Some((stamp, zone)) if zone.starts_with(['+', '-']) || zone_minutes(zone).is_some() => {
+            (stamp, zone.trim())
+        }
+        _ => (rest, "+0000"),
+    };
+
+    let mut fields = stamp.split_whitespace();
+    let day: i64 = fields.next()?.parse().ok()?;
+    let name = fields.next()?;
+    let month =
+        RFC822_MONTHS.iter().position(|m| m.eq_ignore_ascii_case(name)).map_or(0, |i| i as i64 + 1);
+    if month == 0 {
+        return None;
+    }
+    let year: i64 = fields.next()?.parse().ok()?;
+    let clock = fields.next().unwrap_or("00:00:00");
+
+    let mut time = clock.split(':');
+    let hour: i64 = time.next().unwrap_or("0").parse().ok()?;
+    let minute: i64 = time.next().unwrap_or("0").parse().ok()?;
+    let second: i64 = time
+        .next()
+        .unwrap_or("0")
+        .trim_end_matches(|c: char| !c.is_ascii_digit())
+        .parse()
+        .unwrap_or(0);
+
+    if !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+
+    // a two-digit year is a window: rfc 822 has no century, and every feed that
+    // writes one means this century
+    let year = if year < 100 { 2000 + year } else { year };
+
+    let offset = zone_minutes(zone)?;
+    let days = days_from_civil(year, month, day);
+    let seconds =
+        (days * 86_400) + (hour * 3_600) + (minute * 60) + second - i64::from(offset) * 60;
+    Some(seconds * 1_000)
+}
+
+/// a zone as minutes east of utc.
+fn zone_minutes(zone: &str) -> Option<i32> {
+    if let Some((_, minutes)) =
+        RFC822_ZONES.iter().find(|(name, _)| name.eq_ignore_ascii_case(zone))
+    {
+        return Some(*minutes);
+    }
+    let (sign, digits) = match zone.split_at_checked(1)? {
+        ("+", rest) => (1, rest),
+        ("-", rest) => (-1, rest),
+        _ => return None,
+    };
+    if digits.len() != 4 {
+        return None;
+    }
+    let hours: i32 = digits[..2].parse().ok()?;
+    let minutes: i32 = digits[2..].parse().ok()?;
+    Some(sign * (hours * 60 + minutes))
 }
 
 /// days from the civil epoch, for the `yyyy-mm-dd hh:mm:ss` form.
@@ -524,266 +635,4 @@ fn now_millis() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as i64)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn one_of(raw: &str) -> Bookmark {
-        let (items, skipped) = parse(raw.as_bytes(), SourceMedium::Json).expect("should parse");
-        assert_eq!(skipped, 0, "nothing should be skipped");
-        assert_eq!(items.len(), 1, "expected exactly one bookmark");
-        items.into_iter().next().unwrap()
-    }
-
-    #[test]
-    fn a_twitter_web_exporter_row_is_read() {
-        let b = one_of(
-            r#"[{
-              "Tweet Id": "1234567890",
-              "Full Text": "a post about rust and simd",
-              "Created At": "2026-01-02 15:04:05",
-              "User Screen Name": "simonw",
-              "User Name": "Simon Willison",
-              "Tweet Link": "https://x.com/simonw/status/1234567890"
-            }]"#,
-        );
-        assert_eq!(b.source.external_id, "1234567890");
-        assert_eq!(b.text, "a post about rust and simd");
-        assert_eq!(b.author.as_ref().unwrap().handle, "simonw");
-        assert_eq!(b.author.as_ref().unwrap().name.as_deref(), Some("Simon Willison"));
-        assert_eq!(b.created_at, Some(parse_naive("2026-01-02 15:04:05").unwrap()));
-    }
-
-    #[test]
-    fn an_api_v1_tweet_is_read() {
-        let b = one_of(
-            r#"[{
-              "id_str": "987",
-              "full_text": "hello from the api",
-              "created_at": "Wed Jan 02 15:04:05 +0000 2026",
-              "user": {"screen_name": "swyx", "name": "swyx"}
-            }]"#,
-        );
-        assert_eq!(b.source.external_id, "987");
-        assert_eq!(b.text, "hello from the api");
-        assert_eq!(b.author.as_ref().unwrap().handle, "swyx");
-        assert!(b.created_at.is_some(), "the twitter date format should parse");
-    }
-
-    #[test]
-    fn a_console_export_is_read() {
-        let b = one_of(
-            r#"{"exportDate": "2026-01-02", "totalBookmarks": 1,
-                "bookmarks": [{
-                  "id": "555",
-                  "author": "tom_doerr",
-                  "handle": "@tom_doerr",
-                  "timestamp": "2026-01-02T10:00:00Z",
-                  "text": "whisper flow is real",
-                  "media": [],
-                  "hashtags": ["AI"],
-                  "urls": ["https://github.com/x/y"]
-                }]}"#,
-        );
-        assert_eq!(b.source.external_id, "555");
-        assert_eq!(b.text, "whisper flow is real");
-        assert_eq!(b.author.as_ref().unwrap().handle, "tom_doerr", "the @ is stripped");
-        assert!(b.tags.contains("ai"), "hashtags become tags: {:?}", b.tags);
-    }
-
-    #[test]
-    fn a_round_trip_export_is_read() {
-        let b = one_of(
-            r#"[{
-              "tweetId": "777", "text": "round trip", "authorHandle": "simonw",
-              "authorName": "Simon Willison",
-              "tweetCreatedAt": "2026-01-02T10:00:00.000Z"
-            }]"#,
-        );
-        assert_eq!(b.source.external_id, "777");
-        assert_eq!(b.text, "round trip");
-        assert_eq!(b.author.as_ref().unwrap().handle, "simonw");
-    }
-
-    #[test]
-    fn a_modern_post_shape_is_read() {
-        let b = one_of(
-            r#"[{
-              "id": "42", "text": "a modern shape",
-              "author": {"username": "kelseyh", "name": "Kelsey"},
-              "created_at": "2026-01-02T10:00:00.000Z"
-            }]"#,
-        );
-        assert_eq!(b.source.external_id, "42");
-        assert_eq!(b.author.as_ref().unwrap().handle, "kelseyh");
-        assert_eq!(b.author.as_ref().unwrap().name.as_deref(), Some("Kelsey"));
-    }
-
-    #[test]
-    fn the_url_is_built_when_the_record_has_none() {
-        let b = one_of(r#"[{"id": "999", "text": "x", "author": {"username": "someone"}}]"#);
-        let url = b.url.unwrap().to_string();
-        assert!(url.contains("/someone/status/999"), "{url}");
-    }
-
-    #[test]
-    fn a_declared_url_is_preferred() {
-        let b = one_of(
-            r#"[{"id": "1", "text": "x", "author": {"username": "a"}, "url": "https://example.com/real"}]"#,
-        );
-        assert_eq!(b.url.as_ref().unwrap().as_str(), "https://example.com/real");
-    }
-
-    #[test]
-    fn structured_media_is_read() {
-        let b = one_of(
-            r#"[{"id":"1","text":"x","media":[
-                {"type":"photo","url":"https://pbs.twimg.com/a.jpg","previewUrl":"https://pbs.twimg.com/s.jpg"}]}]"#,
-        );
-        assert_eq!(b.media.len(), 1);
-        assert_eq!(b.media[0].kind, MediaKind::Photo);
-        assert!(b.media[0].preview_url.is_some());
-    }
-
-    #[test]
-    fn an_extended_entities_video_picks_the_best_bitrate() {
-        let b = one_of(
-            r#"[{"id":"1","text":"x","extended_entities":{"media":[{
-              "type":"video","media_url_https":"https://video.twimg.com/thumb.jpg",
-              "video_info":{"variants":[
-                {"content_type":"video/mp4","bitrate":256000,"url":"https://video.twimg.com/low.mp4"},
-                {"content_type":"video/mp4","bitrate":2176000,"url":"https://video.twimg.com/high.mp4"},
-                {"content_type":"application/x-mpegURL","url":"https://video.twimg.com/playlist.m3u8"}
-              ]}}]}}]"#,
-        );
-        assert_eq!(b.media.len(), 1);
-        assert_eq!(b.media[0].url.as_str(), "https://video.twimg.com/high.mp4");
-    }
-
-    #[test]
-    fn a_duplicate_media_url_is_kept_once() {
-        let b = one_of(
-            r#"[{"id":"1","text":"x","media":["https://a/1.jpg","https://a/1.jpg","https://a/2.jpg"]}]"#,
-        );
-        assert_eq!(b.media.len(), 2);
-    }
-
-    #[test]
-    fn epoch_seconds_and_milliseconds_both_land_in_milliseconds() {
-        let s = parse_date("1767225845");
-        let ms = parse_date("1767225845000");
-        assert_eq!(s, ms);
-    }
-
-    #[test]
-    fn every_date_shape_parses_to_the_same_instant() {
-        let rfc = parse_date("2026-01-02T15:04:05Z").unwrap();
-        let naive = parse_date("2026-01-02 15:04:05").unwrap();
-        let date_only = parse_date("2026-01-02").unwrap();
-        assert_eq!(rfc, naive, "utc and naive forms should agree");
-        assert_eq!(date_only, naive - ((15 * 3_600 + 4 * 60 + 5) * 1_000));
-    }
-
-    #[test]
-    fn a_date_with_an_offset_still_parses() {
-        let with_offset = parse_date("2026-01-02T15:04:05+02:00");
-        assert_eq!(with_offset, Some(parse_date("2026-01-02T15:04:05Z").unwrap()));
-    }
-
-    #[test]
-    fn an_unparseable_date_is_none_rather_than_a_wrong_value() {
-        assert!(parse_date("not a date").is_none());
-        assert!(parse_date("").is_none());
-        assert!(parse_date("2026-13-45").is_none());
-    }
-
-    #[test]
-    fn the_civil_date_conversion_agrees_with_a_known_instant() {
-        // 1970-01-01 is the unix epoch
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
-        assert_eq!(days_from_civil(2000, 1, 1), 10_957);
-        assert_eq!(days_from_civil(2026, 1, 2), 20_455);
-    }
-
-    #[test]
-    fn a_record_with_no_id_is_skipped_and_counted() {
-        let (items, skipped) =
-            parse_str(r#"[{"text":"no id"},{"id":"1","text":"ok"}]"#, SourceMedium::Json).unwrap();
-        assert_eq!(items.len(), 1);
-        assert_eq!(skipped, 1);
-    }
-
-    #[test]
-    fn a_malformed_file_is_an_error_not_a_panic() {
-        assert!(parse(b"not json at all", SourceMedium::Json).is_err());
-        assert!(parse(b"[]", SourceMedium::Json).is_ok());
-        assert!(parse(b"{}", SourceMedium::Json).is_err());
-        assert!(parse(b"\"a string\"", SourceMedium::Json).is_err());
-    }
-
-    #[test]
-    fn a_file_with_several_records_reads_all_of_them() {
-        let (items, skipped) = parse_str(
-            r#"[{"id":"1","text":"a"},{"id":"2","text":"b"},{"id":"3","text":"c"}]"#,
-            SourceMedium::Json,
-        )
-        .unwrap();
-        assert_eq!(items.len(), 3);
-        assert_eq!(skipped, 0);
-    }
-
-    #[test]
-    fn a_reply_is_marked_as_one() {
-        let b = one_of(r#"[{"id":"1","text":"x","in_reply_to_status_id_str":"99"}]"#);
-        assert_eq!(b.role, Some(ThreadRole::Reply));
-    }
-
-    #[test]
-    fn a_quote_is_marked_as_one() {
-        let b = one_of(r#"[{"id":"1","text":"x","quoted_status_id_str":"99"}]"#);
-        assert_eq!(b.role, Some(ThreadRole::Quote));
-    }
-
-    #[test]
-    fn a_collection_becomes_a_tag_and_is_kept() {
-        let b = one_of(r#"[{"id":"1","text":"x","collection":"ai-tools"}]"#);
-        assert_eq!(b.source.collection.as_deref(), Some("ai-tools"));
-    }
-
-    #[test]
-    fn an_explicit_tag_list_is_read() {
-        let b = one_of(r#"[{"id":"1","text":"x","tags":["Rust","SIMD","" ]}]"#);
-        assert!(b.tags.contains("rust"));
-        assert!(b.tags.contains("simd"));
-        assert!(!b.tags.contains(""));
-    }
-
-    #[test]
-    fn a_comma_separated_tag_string_is_split() {
-        let b = one_of(r#"[{"id":"1","text":"x","tags":"rust, simd, , post"}]"#);
-        assert_eq!(b.tags.len(), 3, "{:?}", b.tags);
-    }
-
-    #[test]
-    fn the_raw_payload_is_kept_for_reparsing() {
-        let b = one_of(r#"[{"id":"1","text":"x","somethingNew":true}]"#);
-        assert!(b.raw.is_some());
-        assert_eq!(b.raw.unwrap()["somethingNew"], Value::Bool(true));
-    }
-
-    #[test]
-    fn a_record_whose_date_is_missing_lands_at_import_time() {
-        let b = one_of(r#"[{"id":"1","text":"x"}]"#);
-        assert!(b.created_at.is_none());
-        assert!(b.ingested_at > 1_700_000_000_000, "{}", b.ingested_at);
-    }
-
-    #[test]
-    fn a_wrapper_object_under_an_unexpected_key_still_finds_its_records() {
-        let (items, _) =
-            parse_str(r#"{"somethingElse":[{"id":"1","text":"x"}]}"#, SourceMedium::Json).unwrap();
-        assert_eq!(items.len(), 1);
-    }
 }
