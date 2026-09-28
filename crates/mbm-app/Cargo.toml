@@ -40,3 +40,9 @@ crossterm.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+rusqlite.workspace = true
+csv.workspace = true
+mbm-core.workspace = true
+mbm-enrich.workspace = true
+mbm-store.workspace = true
+mbm-sink.workspace = true
