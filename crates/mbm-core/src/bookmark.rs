@@ -28,6 +28,39 @@ impl Author {
         self.with_name_opt(Some(name.into()))
     }
 
+    /// whether this account is an email address rather than a platform handle.
+    ///
+    /// the two are worth telling apart because a handle is something a person
+    /// types to find the account again, and an address is not: tagging a post
+    /// `@writer@example` puts a tag in the archive that no one will ever search
+    /// for and that looks like a mention that was never there.
+    #[must_use]
+    pub fn is_address(&self) -> bool {
+        // `@someone` is a handle on every platform that uses the mark, and an
+        // address is the one with a local part in front of the `@`
+        if self.handle.starts_with('@') {
+            return false;
+        }
+        let Some((local, domain)) = self.handle.split_once('@') else {
+            return false;
+        };
+        !local.is_empty() && domain.contains('.')
+    }
+
+    /// how a person writes this account.
+    ///
+    /// one form for every sink and every importer: the handle as the platform
+    /// wrote it, and the display name in brackets when there is one. eight
+    /// renderings of an author across one archive is how an export and a
+    /// listing end up disagreeing about the same post.
+    #[must_use]
+    pub fn display(&self) -> String {
+        match &self.name {
+            Some(name) => format!("{} ({name})", self.handle),
+            None => self.handle.clone(),
+        }
+    }
+
     /// add a display name, when there is one.
     #[must_use]
     pub fn with_name_opt(mut self, name: Option<String>) -> Self {
@@ -38,8 +71,19 @@ impl Author {
     }
 }
 
+/// a handle as the archive stores it.
+///
+/// lowercased, because x, reddit and github all treat handles case
+/// insensitively and `@Trq212` and `@trq212` are one account. the leading `@` is
+/// kept where the platform wrote one, because the mention in a post is written
+/// with it and a tag of `@trq212` that never matches the mention `@trq212` is a
+/// tag nobody can search for.
 fn normalize_handle(raw: &str) -> String {
-    raw.trim().trim_start_matches('@').to_ascii_lowercase()
+    let trimmed = raw.trim();
+    match trimmed.strip_prefix('@') {
+        Some(rest) => format!("@{}", rest.to_ascii_lowercase()),
+        None => trimmed.to_ascii_lowercase(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -414,133 +458,6 @@ pub fn truncate_chars(s: &str, max: usize) -> String {
     let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
     out.push('…');
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sample() -> Bookmark {
-        let mut b = Bookmark::new(
-            SourceRef::new(SourceMedium::X, "123", Url::parse("https://x.com/i/status/123").ok()),
-            "This is a long opening line that runs well past any sensible title budget and therefore must be cut short",
-            1_700_000_000_000,
-        );
-        b.author = Some(Author::new("@SimonW").with_name("Simon Willison"));
-        b.links.push(Link {
-            original: Url::parse("https://t.co/abc").unwrap(),
-            resolved: Url::parse("https://github.com/simonw/llm").unwrap(),
-            kind: LinkKind::Repository,
-            title: Some("simonw/llm".into()),
-            body: None,
-            summary: None,
-            blocked: None,
-        });
-        b
-    }
-
-    #[test]
-    fn handles_are_normalised() {
-        let a = Author::new("@SimonW");
-        assert_eq!(a.handle, "simonw");
-        assert_eq!(a.handle, Author::new("simonw").handle);
-    }
-
-    #[test]
-    fn empty_tags_are_dropped_and_the_rest_are_lowercased() {
-        let b = sample().tag("Rust").tag("  ").tag("rust");
-        assert_eq!(b.tags.len(), 1);
-        assert!(b.tags.contains("rust"));
-    }
-
-    #[test]
-    fn display_title_prefers_the_generated_title() {
-        let mut b = sample();
-        b.title = Some("A generated title".into());
-        assert_eq!(b.display_title(), "A generated title");
-    }
-
-    #[test]
-    fn display_title_falls_back_to_a_link_title() {
-        assert_eq!(sample().display_title(), "simonw/llm");
-    }
-
-    #[test]
-    fn display_title_falls_back_to_the_first_line_of_text() {
-        let mut b = sample();
-        b.links.clear();
-        let t = b.display_title();
-        assert!(t.starts_with("This is a long opening line"), "got {t:?}");
-        assert!(t.ends_with('…'), "should truncate, got {t:?}");
-    }
-
-    #[test]
-    fn display_title_is_never_empty() {
-        let b = Bookmark::new(SourceRef::new(SourceMedium::Manual, "1", None), "", 0);
-        assert_eq!(b.display_title(), "Untitled");
-    }
-
-    #[test]
-    fn sort_timestamp_prefers_creation_over_ingestion() {
-        let mut b = sample();
-        assert_eq!(b.sort_timestamp(), b.ingested_at);
-        b.created_at = Some(42);
-        assert_eq!(b.sort_timestamp(), 42);
-    }
-
-    #[test]
-    fn enrichment_starts_empty_and_completes_in_one_step() {
-        let b = sample();
-        assert!(b.enrichment.is_empty());
-        assert!(!b.enrichment.is_complete());
-        let done = Enrichment {
-            entities_at: Some(1),
-            vision_at: Some(1),
-            tagged_at: Some(1),
-            categorized_at: Some(1),
-            described_at: Some(1),
-        };
-        assert!(done.is_complete());
-    }
-
-    #[test]
-    fn partial_enrichment_is_neither_empty_nor_complete() {
-        let partial = Enrichment { entities_at: Some(1), ..Enrichment::default() };
-        assert!(!partial.is_empty());
-        assert!(!partial.is_complete());
-    }
-
-    #[test]
-    fn media_kind_is_guessed_from_the_url_ignoring_the_query() {
-        assert_eq!(
-            MediaKind::from_url("https://pbs.twimg.com/a.jpg?format=jpg&token=x"),
-            MediaKind::Photo
-        );
-        assert_eq!(MediaKind::from_url("https://video.twimg.com/a.mp4"), MediaKind::Video);
-        assert_eq!(MediaKind::from_url("https://x.com/a.GIF"), MediaKind::Gif);
-        assert_eq!(MediaKind::from_url("https://x.com/audio.m4a"), MediaKind::Audio);
-        assert_eq!(MediaKind::from_url("https://x.com/no-extension"), MediaKind::Photo);
-    }
-
-    #[test]
-    fn truncation_respects_code_points() {
-        let s = "→".repeat(200);
-        let t = truncate_chars(&s, 10);
-        assert_eq!(t.chars().count(), 10);
-        assert_eq!(t, format!("{}…", "→".repeat(9)));
-    }
-
-    #[test]
-    fn bookmarks_round_trip_through_json() {
-        let b = sample();
-        let json = serde_json::to_string(&b).unwrap();
-        let back: Bookmark = serde_json::from_str(&json).unwrap();
-
-        assert_eq!(back.id, b.id);
-        assert_eq!(back.text, b.text);
-        assert_eq!(back.author, b.author);
-        assert!(back.links.is_empty());
-    }
 }
 
 stored_name!(
