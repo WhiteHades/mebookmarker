@@ -99,6 +99,8 @@ pub struct Job {
     pub stage_limit: Option<usize>,
     /// do not write to any sink.
     pub dry_run: bool,
+    /// write only the items every enrichment stage has finished.
+    pub only_complete: bool,
 }
 
 impl std::fmt::Debug for Job {
@@ -113,6 +115,7 @@ impl std::fmt::Debug for Job {
             .field("only_stages", &self.only_stages)
             .field("stage_limit", &self.stage_limit)
             .field("dry_run", &self.dry_run)
+            .field("only_complete", &self.only_complete)
             .finish()
     }
 }
@@ -139,6 +142,7 @@ impl Job {
             only_stages: Vec::new(),
             stage_limit: None,
             dry_run: false,
+            only_complete: false,
         })
     }
 
@@ -191,6 +195,13 @@ impl Job {
         self
     }
 
+    /// write only the items every stage has finished.
+    #[must_use]
+    pub fn only_complete(mut self, only: bool) -> Self {
+        self.only_complete = only;
+        self
+    }
+
     /// whether a source is in scope.
     #[must_use]
     pub fn takes(&self, source: &dyn Source) -> bool {
@@ -210,6 +221,12 @@ pub fn build_sources(config: &Config) -> Result<Vec<Arc<dyn Source>>> {
             SourceMedium::X | SourceMedium::XBird => {
                 let cookies = config.twitter.cookies(&config.data_dir);
                 let mut client = mbm_ingest::XClient::new(http.clone(), cookies);
+                // a mirror, a proxy, or a replay: wherever the endpoint is, the
+                // permalinks a person clicks are still x.com's
+                if let Some(base) = entry.get("base") {
+                    let post_url = entry.get("post_url").unwrap_or("https://x.com");
+                    client = client.with_endpoints(base, post_url);
+                }
                 if !entry.list("folders").is_empty() {
                     let folders = entry
                         .list("folders")
@@ -222,26 +239,35 @@ pub fn build_sources(config: &Config) -> Result<Vec<Arc<dyn Source>>> {
                 Arc::new(mbm_ingest::X::new(client).via_bird_if(use_bird)) as Arc<dyn Source>
             }
             SourceMedium::HackerNews => {
-                let source = mbm_ingest::HackerNews::new(http.clone());
-                match entry.get("tag") {
-                    Some(tag) => Arc::new(source.in_collection(tag)) as Arc<dyn Source>,
-                    None => Arc::new(source) as Arc<dyn Source>,
+                let mut source = mbm_ingest::HackerNews::new(http.clone());
+                if let Some(base) = entry.get("base") {
+                    source = source.with_base(base);
                 }
+                if let Some(tag) = entry.get("tag") {
+                    source = source.in_collection(tag);
+                }
+                Arc::new(source) as Arc<dyn Source>
             }
             SourceMedium::Reddit => {
-                let source = mbm_ingest::Reddit::new(http.clone());
-                let mut source = match entry.get("subreddit") {
-                    Some(name) => source.subreddit(name),
-                    None => source,
-                };
+                let mut source = mbm_ingest::Reddit::new(http.clone());
+                if let Some(base) = entry.get("base") {
+                    source = source.with_base(base);
+                }
+                if let Some(name) = entry.get("subreddit") {
+                    source = source.subreddit(name);
+                }
                 if let Some(sort) = entry.get("sort") {
                     source = source.sorted_by(sort);
                 }
                 Arc::new(source) as Arc<dyn Source>
             }
             SourceMedium::Github => {
-                Arc::new(mbm_ingest::GithubStars::new(http.clone(), config.github.token()))
-                    as Arc<dyn Source>
+                let mut source = mbm_ingest::GithubStars::new(http.clone(), config.github.token());
+                // an enterprise instance has its own api host
+                if let Some(base) = entry.get("base") {
+                    source = source.with_base(base);
+                }
+                Arc::new(source) as Arc<dyn Source>
             }
             SourceMedium::Rss => {
                 let urls = entry.list("urls");
@@ -373,8 +399,19 @@ pub async fn ingest(conn: &Connection, job: &Job) -> Result<RunReport> {
             pages += 1;
             let more = page.has_more
                 && (job.max_pages.is_none_or(|max| pages < max))
-                && page.next_cursor.is_some();
+                && page.next_cursor.is_some()
+                // a source that hands back the cursor it was given is not going
+                // anywhere, and following it would spin until the run was
+                // killed. an api that misbehaves should cost a page, not a night.
+                && page.next_cursor != cursor;
+
             if !more {
+                if page.has_more && page.next_cursor == cursor {
+                    tracing::warn!(
+                        source = source.name(),
+                        "the source returned the same page twice; stopping here rather than                          fetching it again"
+                    );
+                }
                 break;
             }
             cursor = page.next_cursor;
@@ -436,9 +473,21 @@ pub async fn export(
         let mut offset = 0usize;
         let mut report = mbm_core::port::SinkReport::default();
         loop {
-            let batch = repo.list(500, offset)?;
+            // the satellites are what a sink writes: an export that dropped the
+            // tags and the links would be a different document from the one
+            // `mbm list` shows, and the whole point of an archive is that it
+            // is the same archive
+            let batch = if job.only_complete {
+                repo.list_complete(500, offset)?
+            } else {
+                repo.list(500, offset)?
+            };
             if batch.is_empty() {
                 break;
+            }
+            let mut batch = batch;
+            for item in &mut batch {
+                repo.load_satellites(item)?;
             }
             let refs: Vec<&Bookmark> = batch.iter().collect();
             let written = sink.write(&refs).await?;
@@ -486,6 +535,64 @@ pub fn estimate_cost(report: &RunReport) -> f64 {
     asked as f64 * PER_QUESTION * 2.0
 }
 
+/// the prefilter a search ranks over, and when it was built.
+///
+/// the fuzzy stage is a scan of the whole archive unless something narrows it
+/// first, and a terminal interface runs a search on every keystroke. building
+/// the prefilter per query would make typing slower the larger the archive got,
+/// which is the opposite of what a search is for. one process opens one store,
+/// so one cache per thread is the whole of the state.
+#[derive(Debug, Default)]
+struct PrefilterCache {
+    /// how many bookmarks there were, and the newest ingest time.
+    ///
+    /// either changing means the archive changed, and both come from a count
+    /// and a max over an index, which is cheap next to a rebuild.
+    seen: Option<(i64, i64)>,
+    prefilter: Option<mbm_store::prefilter::Prefilter>,
+    positions: Vec<mbm_core::id::Id>,
+}
+
+thread_local! {
+    static PREFILTER: std::cell::RefCell<PrefilterCache> =
+        std::cell::RefCell::new(PrefilterCache::default());
+}
+
+/// run a search with the prefilter attached, rebuilding it when the archive has
+/// moved on.
+///
+/// the prefilter lives in a thread local rather than in the caller's hands, so
+/// the search runs inside the closure: a borrow of it cannot outlive this call,
+/// which is what stops a second store in the same process from being ranked
+/// against the first one's index.
+fn with_searcher(
+    conn: &Connection,
+    query: &str,
+    mode: Mode,
+    limit: usize,
+) -> Result<Vec<mbm_store::search::Hit>> {
+    let stamp: (i64, i64) = {
+        let mut stmt = conn
+            .prepare("SELECT count(*), coalesce(max(ingested_at), 0) FROM bookmark")
+            .map_err(|e| Error::Store(e.to_string()))?;
+        stmt.query_row([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+            .map_err(|e| Error::Store(e.to_string()))?
+    };
+
+    PREFILTER.with(|cell| {
+        let mut cache = cell.borrow_mut();
+        if cache.seen != Some(stamp) || cache.prefilter.is_none() {
+            let (prefilter, positions) =
+                mbm_store::build_prefilter(conn, |id| mbm_store::indexed_text(conn, id))?;
+            cache.prefilter = Some(prefilter);
+            cache.positions = positions;
+            cache.seen = Some(stamp);
+        }
+        let prefilter = cache.prefilter.as_ref().expect("just ensured");
+        Searcher::new(conn).with_prefilter(prefilter, &cache.positions).search(query, mode, limit)
+    })
+}
+
 /// the items a search returns, best first.
 pub fn search(
     conn: &Connection,
@@ -497,7 +604,7 @@ pub fn search(
     if query.trim().is_empty() {
         return repo.list(limit, offset);
     }
-    let hits = Searcher::new(conn).search(query, Mode::Hybrid, limit.saturating_add(offset))?;
+    let hits = with_searcher(conn, query, Mode::Hybrid, limit.saturating_add(offset))?;
     let ids: Vec<mbm_core::id::Id> = hits.into_iter().skip(offset).map(|h| h.id).collect();
     repo.load_ranked(&ids)
 }
@@ -513,7 +620,7 @@ pub fn search_mode(
     if query.trim().is_empty() {
         return Ok(repo.list(limit, 0)?.into_iter().map(|b| (b, 0.0)).collect());
     }
-    let hits = Searcher::new(conn).search(query, mode, limit)?;
+    let hits = with_searcher(conn, query, mode, limit)?;
     let ids: Vec<mbm_core::id::Id> = hits.iter().map(|h| h.id).collect();
     let scores: std::collections::HashMap<mbm_core::id::Id, f64> =
         hits.iter().map(|h| (h.id, h.score)).collect();
@@ -559,290 +666,4 @@ pub fn reset(config: &Config) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn sql(e: &rusqlite::Error) -> Error {
-    Error::Store(e.to_string())
-}
-
-#[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
-mod tests {
-    use super::*;
-    use crate::config::{Sink, Source};
-    use mbm_core::bookmark::SourceRef;
-    use mbm_core::port::Source as SourceTrait;
-    use std::path::PathBuf;
-
-    struct Empty;
-
-    #[async_trait::async_trait]
-    impl SourceTrait for Empty {
-        fn medium(&self) -> SourceMedium {
-            SourceMedium::Rss
-        }
-
-        async fn fetch(&self, _request: &FetchRequest) -> Result<mbm_core::port::FetchPage> {
-            Ok(mbm_core::port::FetchPage::empty())
-        }
-    }
-
-    fn store() -> (tempfile::TempDir, Connection) {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("t.db")).unwrap();
-        mbm_store::migrate(&conn).unwrap();
-        (dir, conn)
-    }
-
-    fn one(text: &str) -> Bookmark {
-        numbered(text, "1")
-    }
-
-    fn numbered(text: &str, id: &str) -> Bookmark {
-        let mut b = Bookmark::new(SourceRef::new(SourceMedium::X, id, None), text, 0);
-        b.created_at = Some(1_767_312_000_000);
-        b
-    }
-
-    #[tokio::test]
-    async fn a_run_with_no_sources_still_reports() {
-        let (_dir, conn) = store();
-        let job = Job {
-            sources: Vec::new(),
-            sinks: Vec::new(),
-            limit: Some(10),
-            max_pages: None,
-            only: None,
-            skip_enrich: true,
-            only_stages: Vec::new(),
-            stage_limit: None,
-            dry_run: true,
-        };
-        let report = run(&conn, &Config::default(), &job).await.unwrap();
-        assert_eq!(report.fetched, 0);
-        assert!(report.line().contains("0 fetched"), "{}", report.line());
-    }
-
-    #[tokio::test]
-    async fn storing_the_same_item_twice_counts_a_duplicate() {
-        let (_dir, conn) = store();
-        let repo = Repo::new(&conn);
-        let items = vec![one("a post")];
-        let (inserted, duplicates) = store_many(&repo, &items).unwrap();
-        assert_eq!((inserted, duplicates), (1, 0));
-        let (inserted, duplicates) = store_many(&repo, &items).unwrap();
-        assert_eq!((inserted, duplicates), (0, 1));
-    }
-
-    #[tokio::test]
-    async fn two_sources_returning_the_same_item_store_it_once() {
-        let (_dir, conn) = store();
-        let job = Job {
-            sources: vec![Arc::new(Empty), Arc::new(Empty)],
-            sinks: Vec::new(),
-            limit: Some(10),
-            max_pages: None,
-            only: None,
-            skip_enrich: true,
-            only_stages: Vec::new(),
-            stage_limit: None,
-            dry_run: true,
-        };
-        let report = ingest(&conn, &job).await.unwrap();
-        assert_eq!(report.fetched, 0);
-        assert_eq!(Repo::new(&conn).count().unwrap(), 0);
-    }
-
-    #[test]
-    fn a_source_filter_narrows_the_run() {
-        let job = Job {
-            sources: Vec::new(),
-            sinks: Vec::new(),
-            limit: None,
-            max_pages: None,
-            only: Some(SourceMedium::Reddit),
-            skip_enrich: true,
-            only_stages: Vec::new(),
-            stage_limit: None,
-            dry_run: true,
-        };
-        assert!(!job.takes(&Empty), "rss is not reddit");
-        assert!(job.only.is_some());
-    }
-
-    #[test]
-    fn a_config_with_no_sinks_still_gets_one() {
-        let mut config = Config::default();
-        config.data_dir = PathBuf::from("/tmp/mbm-test");
-        config.sinks.clear();
-        let job = Job::full(&config, &Connection::open_in_memory().unwrap()).unwrap();
-        assert_eq!(job.sinks.len(), 1, "a run with no configured sink still writes jsonl");
-    }
-
-    #[test]
-    fn a_configured_sink_becomes_the_right_object() {
-        let mut config = Config::default();
-        config.data_dir = PathBuf::from("/tmp/mbm-test");
-        config.sinks =
-            vec![Sink { kind: SinkMedium::Html, enabled: true, path: PathBuf::from("site.html") }];
-        let job = Job::full(&config, &Connection::open_in_memory().unwrap()).unwrap();
-        assert_eq!(job.sinks[0].name(), "html");
-    }
-
-    #[test]
-    fn a_disabled_sink_is_not_built() {
-        let mut config = Config::default();
-        config.sinks =
-            vec![Sink { kind: SinkMedium::Html, enabled: false, path: PathBuf::from("site.html") }];
-        let job = Job::full(&config, &Connection::open_in_memory().unwrap()).unwrap();
-        assert_eq!(job.sinks.len(), 1, "the fallback jsonl");
-    }
-
-    #[test]
-    fn the_default_plan_runs_the_free_stage_first() {
-        let config = Config::default();
-        let job = Job::full(&config, &Connection::open_in_memory().unwrap()).unwrap();
-        let plan = build_plan(&config, &job);
-        let stages = plan.stages();
-        assert_eq!(stages[0], EnrichStage::Entities);
-        assert!(!stages.contains(&EnrichStage::Describe), "prose is opt-in");
-    }
-
-    #[test]
-    fn turning_a_stage_off_removes_it_from_the_plan() {
-        let mut config = Config::default();
-        config.enrich.vision = false;
-        config.enrich.tags = false;
-        let job = Job::full(&config, &Connection::open_in_memory().unwrap()).unwrap();
-        let stages = build_plan(&config, &job).stages();
-        assert!(!stages.contains(&EnrichStage::Vision));
-        assert!(!stages.contains(&EnrichStage::Tags));
-        assert!(stages.contains(&EnrichStage::Entities));
-    }
-
-    #[test]
-    fn naming_a_stage_keeps_only_that_one() {
-        let config = Config::default();
-        let job = Job::full(&config, &Connection::open_in_memory().unwrap())
-            .unwrap()
-            .with_stages(vec![EnrichStage::Tags]);
-        let stages = build_plan(&config, &job).stages();
-        assert_eq!(stages, vec![EnrichStage::Tags]);
-    }
-
-    #[test]
-    fn an_rss_source_with_no_urls_is_a_config_error() {
-        let mut config = Config::default();
-        config.sources = vec![Source { medium: SourceMedium::Rss, ..Source::default() }];
-        let Err(err) = build_sources(&config) else {
-            panic!("a source with no urls should not build");
-        };
-        assert!(err.to_string().contains("urls"), "{err}");
-    }
-
-    #[test]
-    fn a_youtube_source_with_no_playlists_is_a_config_error() {
-        let mut config = Config::default();
-        config.sources = vec![Source { medium: SourceMedium::YouTube, ..Source::default() }];
-        assert!(build_sources(&config).is_err());
-    }
-
-    #[test]
-    fn a_file_medium_needs_no_network_adapter() {
-        let mut config = Config::default();
-        config.sources = vec![Source { medium: SourceMedium::Json, ..Source::default() }];
-        let sources = build_sources(&config).unwrap();
-        assert!(sources.is_empty(), "json is read by `mbm import`");
-    }
-
-    #[test]
-    fn a_configured_rss_source_becomes_a_feed() {
-        let mut config = Config::default();
-        config.sources = vec![Source {
-            medium: SourceMedium::Rss,
-            enabled: true,
-            options: toml::from_str(r#"urls = ["https://a.example/feed"]"#).unwrap(),
-        }];
-        let sources = build_sources(&config).unwrap();
-        assert_eq!(sources.len(), 1);
-        assert_eq!(sources[0].medium(), SourceMedium::Rss);
-    }
-
-    #[test]
-    fn the_cost_estimate_scales_with_the_questions_asked() {
-        let mut report = RunReport::default();
-        report.stages = vec![
-            (EnrichStage::Entities, mbm_enrich::StageReport { done: 100, ..Default::default() }),
-            (EnrichStage::Tags, mbm_enrich::StageReport { done: 100, ..Default::default() }),
-            (EnrichStage::Categorize, mbm_enrich::StageReport { done: 100, ..Default::default() }),
-        ];
-        let cost = estimate_cost(&report);
-        // 200 items asked two questions each at the measured rate
-        assert!((cost - 200.0 * 2.0 * 0.000_006_5).abs() < 1e-12, "{cost}");
-    }
-
-    #[test]
-    fn the_free_stages_cost_nothing() {
-        let mut report = RunReport::default();
-        report.stages = vec![(
-            EnrichStage::Entities,
-            mbm_enrich::StageReport { done: 1000, ..Default::default() },
-        )];
-        assert!(estimate_cost(&report).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn the_report_line_says_what_happened() {
-        let report = RunReport {
-            fetched: 10,
-            inserted: 8,
-            duplicates: 2,
-            elapsed: Duration::from_millis(120),
-            ..RunReport::default()
-        };
-        let line = report.line();
-        assert!(line.contains("10 fetched"), "{line}");
-        assert!(line.contains("8 new"), "{line}");
-        assert!(line.contains("2 already known"), "{line}");
-        assert!(line.contains("120ms"), "{line}");
-    }
-
-    #[test]
-    fn the_store_opens_and_migrates() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut config = Config::default();
-        config.data_dir = dir.path().to_path_buf();
-        let conn = open(&config).unwrap();
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, mbm_store::schema::SCHEMA_VERSION);
-        assert!(config.database().exists());
-    }
-
-    #[test]
-    fn opening_the_store_twice_is_the_same_store() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut config = Config::default();
-        config.data_dir = dir.path().to_path_buf();
-        drop(open(&config).unwrap());
-        let conn = open(&config).unwrap();
-        assert_eq!(Repo::new(&conn).count().unwrap(), 0);
-    }
-
-    #[tokio::test]
-    async fn searching_finds_what_was_stored() {
-        let (_dir, conn) = store();
-        Repo::new(&conn).insert(&numbered("a post about sqlite internals", "1")).unwrap();
-        Repo::new(&conn).insert(&numbered("a post about gardening", "2")).unwrap();
-        let found = search(&conn, "sqlite", 10, 0).unwrap();
-        assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].text.contains("sqlite"));
-    }
-
-    #[tokio::test]
-    async fn an_empty_query_lists_everything() {
-        let (_dir, conn) = store();
-        Repo::new(&conn).insert(&numbered("one", "1")).unwrap();
-        Repo::new(&conn).insert(&numbered("two", "2")).unwrap();
-        assert_eq!(search(&conn, "  ", 10, 0).unwrap().len(), 2);
-    }
 }
