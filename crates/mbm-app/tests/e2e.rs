@@ -37,6 +37,9 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use mbm_app::tui::theme::{Appearance, Theme};
+use mbm_app::tui::{App, render_to};
+
 // ─── the fixtures ──────────────────────────────────────────────────────────
 
 /// a hacker news response, the shape algolia returned, captured from a real
@@ -1985,7 +1988,7 @@ fn the_terminal_interface_draws_a_list_a_detail_and_a_search() {
     std::thread::sleep(std::time::Duration::from_millis(600));
     let filtered = capture(&session.name);
     assert!(
-        filtered.contains("showing 3 with hackernews"),
+        filtered.contains("3 bookmarks tagged hackernews"),
         "picking a tag did not filter: {filtered}"
     );
 
@@ -2080,6 +2083,51 @@ fn the_same_frame_renders_differently_in_each_appearance() {
     assert_ne!(light_html, dark_html, "the two appearances drew the same colours");
     assert!(light_html.contains("#fcfdff"), "the light page is not the light page");
     assert!(dark_html.contains("#0d1117"), "the dark page is not the dark page");
+}
+
+#[test]
+fn an_empty_archive_says_what_it_is_and_how_to_fill_it() {
+    // an empty state is the first thing a new user sees and the easiest thing
+    // to get wrong. "no results" is a shrug: it names neither the place nor the
+    // way out. both empty states have to name what this is and offer one way
+    // forward.
+    let archive = Archive::new("empty");
+    let frame = render(&archive, 90, 20, Theme::for_appearance(Appearance::Dark));
+    assert!(frame.contains("the archive is empty"), "{frame}");
+    assert!(frame.contains("mbm add https://example.com"), "{frame}");
+    assert!(frame.contains("mbm import"), "{frame}");
+
+    // and a search that matches nothing names the query, and says how to leave
+    archive.ok(&["add", "https://example.com/a"]);
+    let frame = render(&archive, 90, 20, Theme::for_appearance(Appearance::Dark));
+    assert!(frame.contains("example.com"), "the item is not in the list:\n{frame}");
+}
+
+#[test]
+fn a_search_that_matches_nothing_says_so_and_offers_the_way_out() {
+    let archive = Archive::new("no-match");
+    archive.ok(&["add", "https://example.com/a"]);
+    // drive the real binary so the query is set the way a person sets it
+    let session = Session { name: start_session(&archive, 90, 18) };
+    send(&session.name, "zzzz");
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let frame = capture(&session.name);
+    assert!(frame.contains("nothing matches"), "{frame}");
+    assert!(frame.contains("zzzz"), "the state does not name the query:\n{frame}");
+    assert!(frame.contains("ctrl-k"), "the state does not say how to leave:\n{frame}");
+
+    // and ctrl-k brings the archive back
+    send(&session.name, "C-k");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let back = capture(&session.name);
+    assert!(back.contains("example.com"), "clearing did not restore the list:\n{back}");
+}
+
+/// render one frame of the interface to text, at a given size and appearance.
+fn render(archive: &Archive, width: u16, height: u16, theme: Theme) -> String {
+    let conn = mbm_store::open(&archive.data.join("mebookmarker.db")).expect("the store opens");
+    let mut app = App::new(Arc::new(Mutex::new(conn)), "");
+    render_to(width, height, &mut app, &theme)
 }
 
 #[test]
