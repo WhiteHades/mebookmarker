@@ -10,16 +10,25 @@
 //!   tags       what the archive is tagged with
 //! ```
 //!
-//! the design rules this file follows:
+//! the file is split three ways, and the split is the design:
 //!
-//! - **the query is the interface.** every list view has a search box, and the
-//!   search runs on every keystroke. a laggy list is worse than a narrow one.
-//! - **the ranking toggle is visible.** hybrid by default, exact and fuzzy on
-//!   demand, because a half-typed word wants fuzzy and a finished one does not.
-//! - **nothing is destructive without a key.** tagging and deleting both say
-//!   what they are about to do and undo is `u`.
-//! - **the status line is always there.** what is in the archive, what the
-//!   current view is, and what the last action did.
+//! - [`theme`] is every colour, in two appearances, each value measured.
+//! - [`motion`] is the clock and the curve, and what is deliberately not
+//!   animated at all.
+//! - [`draw`] is the frame. this file is the state, the keys and the loop.
+//!
+//! the rules the interface holds itself to:
+//!
+//! - **the query is the interface.** every list view has a field at the top
+//!   and the search runs as you type, debounced so a held key does not thrash
+//!   the index.
+//! - **the ranking is a control.** hybrid by default, exact and fuzzy on tab,
+//!   shown as a chip in the field rather than as a word in the status line.
+//! - **nothing is destructive by accident.** removing asks for nothing but
+//!   says what it did in a colour of its own, and `ctrl-u` puts it back.
+//! - **the status line is always there and always fits.** what is in the
+//!   archive, what the last action did, and what the keys do, giving way in the
+//!   order of how much each matters as the terminal narrows.
 
 use std::borrow::Cow;
 use std::sync::Arc;
@@ -28,12 +37,15 @@ use std::time::Instant;
 use mbm_core::bookmark::Bookmark;
 use mbm_core::error::{Error, Result};
 use mbm_store::{Filter, Mode, Repo};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
-use ratatui::{Frame, Terminal};
+use ratatui::Terminal;
 use rusqlite::Connection;
+
+pub mod draw;
+pub mod motion;
+pub mod theme;
+
+use motion::{Clock, Motion};
+use theme::{Appearance, Theme};
 
 /// which view is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,6 +108,10 @@ pub enum Action {
     Quit,
     /// redraw.
     Refresh,
+    /// move up a screen.
+    PageUp,
+    /// move down a screen.
+    PageDown,
     /// a key the interface ignores.
     None,
 }
@@ -105,18 +121,26 @@ pub enum Action {
 /// the raw key first, because `KeyCode::Char` with a control modifier is a
 /// command rather than a character, and reading it as text would put a `c` in
 /// the search box every time someone pressed ctrl-c.
+///
+/// every command is on a modifier. a terminal has no function key it can
+/// promise, and a letter is a letter: someone typing a query that happens to
+/// contain `g` should not leave the tags view.
 #[must_use]
 pub fn action_for(event: &crossterm::event::KeyEvent) -> Action {
     use crossterm::event::{KeyCode, KeyModifiers};
 
-    // every unmodified key is a character for the search box, so the commands
-    // live on ctrl, where there are twenty-six of them and one is in use
     if event.modifiers.contains(KeyModifiers::CONTROL) {
         return match event.code {
             KeyCode::Char('c') => Action::Quit,
-            KeyCode::Char('u') => Action::Clear,
+            // `ctrl-u` is undo, because that is what the help line says it is
+            // and because the thing behind it is the only action here that
+            // loses data. it used to clear the query, which meant the help was
+            // lying about the one key that matters.
+            KeyCode::Char('u' | 'z') => Action::Undo,
+            // clearing moves to ctrl-k, the kill-the-line key, so the two do not
+            // share a binding
+            KeyCode::Char('k') => Action::Clear,
             KeyCode::Char('r') => Action::Refresh,
-            KeyCode::Char('z') => Action::Undo,
             KeyCode::Char('g') => Action::Tags,
             KeyCode::Char('d') => Action::Delete,
             _ => Action::None,
@@ -129,6 +153,8 @@ pub fn action_for(event: &crossterm::event::KeyEvent) -> Action {
         KeyCode::Down => Action::Down,
         KeyCode::Home => Action::Home,
         KeyCode::End => Action::End,
+        KeyCode::PageUp => Action::PageUp,
+        KeyCode::PageDown => Action::PageDown,
         KeyCode::Enter => Action::Open,
         KeyCode::Esc => Action::Back,
         KeyCode::Tab => Action::Rank,
@@ -168,6 +194,20 @@ pub struct App {
     /// window has not passed, otherwise the last few characters a person typed
     /// are never searched at all.
     loaded: String,
+
+    /// when the detail view last opened, which is what its entrance runs on.
+    ///
+    /// it starts settled rather than running, because the first thing drawn
+    /// should be the finished thing and motion should only ever answer
+    /// something the reader did.
+    opened: Clock,
+    /// when the status message last changed, which is what its settling runs on.
+    said: Clock,
+    /// how many rows the list shows, so a page is a page rather than a guess.
+    rows: usize,
+    /// how many bookmarks the archive holds, cached so the status line does not
+    /// run a count on every frame.
+    total: usize,
 }
 
 impl std::fmt::Debug for App {
@@ -185,6 +225,8 @@ impl std::fmt::Debug for App {
             .field("tag_input", &self.tag_input)
             .field("undo", &self.undo.as_ref().map(|b| b.id.get()))
             .field("last_query", &self.last_query)
+            .field("rows", &self.rows)
+            .field("total", &self.total)
             .finish_non_exhaustive()
     }
 }
@@ -207,9 +249,50 @@ impl App {
             // the debounce window over an empty list
             last_query: None,
             loaded: String::new(),
+            opened: Clock::settled(),
+            said: Clock::settled(),
+            rows: 20,
+            total: 0,
         };
         app.reload();
         app
+    }
+
+    /// how many rows the list has to show.
+    ///
+    /// the terminal is asked once per resize rather than per frame, because a
+    /// frame is a repaint and a size query is a syscall.
+    pub fn set_rows(&mut self, rows: usize) {
+        self.rows = rows.max(1);
+    }
+
+    /// the archive's size, as the status line spells it.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.total
+    }
+
+    /// how far through an entrance the detail view is, from 0 to 1.
+    #[must_use]
+    pub fn open_progress(&self, motion: Motion) -> f64 {
+        motion.progress(self.opened.since(), motion::ENTER)
+    }
+
+    /// how far through its settling the status message is, from 0 to 1.
+    #[must_use]
+    pub fn status_progress(&self, motion: Motion) -> f64 {
+        motion.progress(self.said.since(), motion::EXIT)
+    }
+
+    /// say something, and start its settling.
+    ///
+    /// every message goes through here so the one that changes the colour of the
+    /// bar is the one that restarts the clock. a message set directly would
+    /// never brighten, and a status line whose text never changes emphasis is a
+    /// status line nobody notices.
+    pub fn say(&mut self, message: impl Into<Cow<'static, str>>) {
+        self.status = message.into();
+        self.said.restart();
     }
 
     /// the view showing.
@@ -245,6 +328,11 @@ impl App {
         format!("search · {}", mode_label(self.mode))
     }
 
+    /// how many rows the showing list has.
+    fn shown_len(&self) -> usize {
+        if self.view == View::Tags { self.tags.len() } else { self.items.len() }
+    }
+
     /// the selected item.
     #[must_use]
     pub fn selected_item(&self) -> Option<&Bookmark> {
@@ -278,7 +366,11 @@ impl App {
         };
 
         self.tags = Repo::new(&conn).tags_with_counts(200).unwrap_or_default();
-        self.selected = self.selected.min(self.items.len().saturating_sub(1));
+        self.total = Repo::new(&conn).count().unwrap_or(self.total);
+        // the list and the tag list are two different lengths sharing one
+        // cursor, so the clamp is whichever of the two is showing
+        let shown = if self.view == View::Tags { self.tags.len() } else { self.items.len() };
+        self.selected = self.selected.min(shown.saturating_sub(1));
         self.loaded.clone_from(&self.query);
         self.last_query = Some(Instant::now());
     }
@@ -306,25 +398,54 @@ impl App {
             Action::Clear => {
                 self.query.clear();
                 self.selected = 0;
-                self.status = Cow::Borrowed("query cleared");
                 self.view = View::Browse;
+                self.say("query cleared");
                 self.reload();
             }
             Action::Up => self.selected = self.selected.saturating_sub(1),
             Action::Down => {
-                if self.selected + 1 < self.items.len() {
+                if self.selected + 1 < self.shown_len() {
                     self.selected += 1;
                 }
             }
             Action::Home => self.selected = 0,
-            Action::End => self.selected = self.items.len().saturating_sub(1),
+            Action::End => self.selected = self.shown_len().saturating_sub(1),
+            // a page is a screenful, which is the only sense of "a lot" a
+            // keyboard can express here
+            Action::PageUp => self.selected = self.selected.saturating_sub(self.rows),
+            Action::PageDown => {
+                self.selected = (self.selected + self.rows).min(self.shown_len().saturating_sub(1));
+            }
             Action::Open => {
-                if self.selected_item().is_some() {
+                if self.view == View::Tags {
+                    // a tag list that cannot be used is a picture of a tag
+                    // list. picking a tag filters the archive by it, which is
+                    // the only reason anyone opens it.
+                    if let Some((tag, count)) = self.tags.get(self.selected).cloned() {
+                        self.query.clone_from(&tag);
+                        self.selected = 0;
+                        self.view = View::Browse;
+                        self.say(format!("showing {count} with {tag}"));
+                        self.reload();
+                    }
+                } else if self.selected_item().is_some() {
                     self.view = View::Detail;
+                    // the view is already on screen when this returns, so the
+                    // entrance starts from the next frame rather than from a
+                    // frame the reader never saw
+                    self.opened.restart();
                 }
             }
-            // every view but the two overlays goes back to the list
-            Action::Back => self.view = View::Browse,
+            // every view but the tag list goes back to the list
+            Action::Back => {
+                if self.view == View::Detail {
+                    // the selection is remembered, so coming back lands on the
+                    // row that was open rather than at the top
+                    self.view = View::Browse;
+                } else {
+                    self.view = View::Browse;
+                }
+            }
             Action::Tags => {
                 self.view = if self.view == View::Tags { View::Browse } else { View::Tags };
             }
@@ -334,13 +455,13 @@ impl App {
                     Mode::Exact => Mode::Fuzzy,
                     Mode::Fuzzy => Mode::Hybrid,
                 };
-                self.status = Cow::Owned(format!("ranking: {}", mode_label(self.mode)));
+                self.say(format!("ranking: {}", mode_label(self.mode)));
                 self.reload();
             }
             Action::Tag => {
                 if self.selected_item().is_some() {
                     self.tag_input = Some(String::new());
-                    self.status = Cow::Borrowed("tag: type a tag, enter to save, esc to cancel");
+                    self.say("type a tag, enter to save, esc to cancel");
                 }
             }
             Action::Delete => {
@@ -350,7 +471,7 @@ impl App {
             }
             Action::Undo => self.put_back(),
             Action::Refresh => {
-                self.status = Cow::Borrowed("reloaded");
+                self.say("reloaded");
                 self.reload();
             }
             // a key the interface does not use
@@ -388,7 +509,10 @@ impl App {
     fn tag_prompt(&mut self, action: Action) {
         let Some(buffer) = self.tag_input.as_mut() else { return };
         match action {
-            Action::Quit | Action::Back | Action::None => self.tag_input = None,
+            Action::Quit | Action::Back | Action::None => {
+                self.tag_input = None;
+                self.say("tag cancelled");
+            }
             Action::Type(c) => buffer.push(c),
             Action::Backspace => {
                 buffer.pop();
@@ -397,7 +521,7 @@ impl App {
                 let tag = buffer.trim().to_owned();
                 self.tag_input = None;
                 if tag.is_empty() {
-                    self.status = Cow::Borrowed("no tag given");
+                    self.say("no tag given, so nothing was added");
                     return;
                 }
                 self.apply_tag(&tag);
@@ -409,57 +533,72 @@ impl App {
     /// add a tag to the selected bookmark.
     pub fn apply_tag(&mut self, tag: &str) {
         let Some(id) = self.selected_item().map(|b| b.id) else { return };
-        let conn = self.conn.lock().expect("the store lock is held for one frame");
-        let repo = Repo::new(&conn);
-        let Ok(Some(mut bookmark)) = repo.load(id) else {
-            self.status = Cow::Borrowed("could not read that bookmark");
-            return;
+        // the work happens under the lock and the message after it, because
+        // saying something borrows the app and the lock borrows the app too.
+        let outcome = {
+            let conn = self.conn.lock().expect("the store lock is held for one frame");
+            let repo = Repo::new(&conn);
+            match repo.load(id) {
+                Ok(Some(mut bookmark)) => {
+                    bookmark.push_tag(tag);
+                    let tags: ahash::AHashSet<String> = bookmark.tags.iter().cloned().collect();
+                    match repo.set_tags(id, &tags) {
+                        Ok(()) => {
+                            let tags = repo.tags_with_counts(200).unwrap_or_default();
+                            Ok((bookmark, tags))
+                        }
+                        Err(e) => Err(e.to_string()),
+                    }
+                }
+                Ok(None) => Err("that bookmark is no longer in the archive".to_owned()),
+                Err(e) => Err(e.to_string()),
+            }
         };
-        bookmark.push_tag(tag);
-        let tags: ahash::AHashSet<String> = bookmark.tags.iter().cloned().collect();
-        match repo.set_tags(id, &tags) {
-            Ok(()) => {
-                self.status = Cow::Owned(format!("tagged {id} with `{tag}`"));
+        match outcome {
+            Ok((bookmark, tags)) => {
                 if let Some(slot) = self.items.iter_mut().find(|(b, _)| b.id == id) {
                     slot.0 = bookmark;
                 }
-                self.tags = repo.tags_with_counts(200).unwrap_or_default();
+                self.tags = tags;
+                self.say(format!("tagged {id} with `{tag}`"));
             }
-            Err(e) => self.status = Cow::Owned(format!("could not tag: {e}")),
+            Err(why) => self.say(format!("could not tag it: {why}. nothing was changed.")),
         }
     }
 
     /// remove a bookmark, remembering it for undo.
     pub fn remove(&mut self, bookmark: &Bookmark) {
         let id = bookmark.id;
-        let conn = self.conn.lock().expect("the store lock is held for one frame");
-        let deleted = conn
-            .execute("DELETE FROM bookmark WHERE id = ?1", [id.get() as i64])
-            .is_ok_and(|n| n > 0);
+        let deleted = {
+            let conn = self.conn.lock().expect("the store lock is held for one frame");
+            conn.execute("DELETE FROM bookmark WHERE id = ?1", [id.get() as i64])
+                .is_ok_and(|n| n > 0)
+        };
         if deleted {
             self.undo = Some(bookmark.clone());
-            self.status = Cow::Owned(format!("removed {id}, u to put it back"));
-            drop(conn);
+            self.say(format!("removed {id}. ctrl-u puts it back."));
             self.reload();
         } else {
-            self.status = Cow::Owned(format!("could not remove {id}"));
+            self.say(format!("could not remove {id}. it is still in the archive."));
         }
     }
 
     /// put the last removed bookmark back.
     pub fn put_back(&mut self) {
         let Some(bookmark) = self.undo.take() else {
-            self.status = Cow::Borrowed("nothing to put back");
+            self.say("nothing to put back");
             return;
         };
-        let conn = self.conn.lock().expect("the store lock is held for one frame");
-        match Repo::new(&conn).insert(&bookmark) {
+        let restored = {
+            let conn = self.conn.lock().expect("the store lock is held for one frame");
+            Repo::new(&conn).insert(&bookmark).map_err(|e| e.to_string())
+        };
+        match restored {
             Ok(()) => {
-                self.status = Cow::Owned(format!("put {id} back", id = bookmark.id));
-                drop(conn);
+                self.say(format!("put {id} back", id = bookmark.id));
                 self.reload();
             }
-            Err(e) => self.status = Cow::Owned(format!("could not put it back: {e}")),
+            Err(why) => self.say(format!("could not put it back: {why}. it is still gone.")),
         }
     }
 
@@ -472,7 +611,7 @@ impl App {
     }
 }
 
-/// the ranking mode, as the status line spells it.
+/// the ranking mode, as a person reads it.
 #[must_use]
 pub const fn mode_label(mode: Mode) -> &'static str {
     match mode {
@@ -480,287 +619,6 @@ pub const fn mode_label(mode: Mode) -> &'static str {
         Mode::Exact => "exact",
         Mode::Fuzzy => "fuzzy",
     }
-}
-
-// ─── drawing ────────────────────────────────────────────────────────────────
-
-/// the palette.
-///
-/// one accent, and three greys. an archive browser is a reading tool, and a
-/// reading tool that spends colour on decoration is harder to read than one
-/// that does not.
-mod style {
-    use ratatui::style::Color;
-
-    pub(super) const ACCENT: Color = Color::Rgb(0x8a, 0xb4, 0xf8);
-    pub(super) const MUTED: Color = Color::Rgb(0x9a, 0xa1, 0xab);
-    pub(super) const SELECTED: Color = Color::Rgb(0x1f, 0x29, 0x37);
-    pub(super) const WARN: Color = Color::Rgb(0xf5, 0x9e, 0x0b);
-}
-
-/// draw one frame.
-pub fn draw(frame: &mut Frame<'_>, app: &mut App) {
-    let areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(3),
-            Constraint::Min(3),
-            Constraint::Length(1),
-        ])
-        .split(frame.area());
-
-    draw_query(frame, areas[1], app);
-    match app.view {
-        View::Detail => draw_detail(frame, areas[2], app),
-        View::Tags => draw_tags(frame, areas[2], app),
-        _ => draw_list(frame, areas[2], app),
-    }
-    draw_status(frame, areas[3], app);
-}
-
-fn draw_query(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let hint = if app.tag_input.is_some() {
-        format!("tag: {}", app.tag_input.as_deref().unwrap_or_default())
-    } else {
-        format!("search: {}{}", app.query, if app.query.is_empty() { "…" } else { "" })
-    };
-    let block =
-        Block::default().borders(Borders::ALL).border_style(Style::default().fg(style::MUTED));
-    let paragraph = Paragraph::new(hint).block(block).style(Style::default().fg(style::ACCENT));
-    frame.render_widget(paragraph, area);
-}
-
-fn draw_list(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    if app.items.is_empty() {
-        let text = if app.query.trim().is_empty() {
-            "nothing in the archive yet.\n\n  mbm add https://example.com\n  mbm import ~/Downloads/bookmarks.html"
-        } else {
-            "nothing matches that query."
-        };
-        frame.render_widget(
-            Paragraph::new(text)
-                .style(Style::default().fg(style::MUTED))
-                .wrap(Wrap { trim: true })
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(style::MUTED)),
-                ),
-            area,
-        );
-        return;
-    }
-
-    let items: Vec<ListItem<'_>> = app
-        .items
-        .iter()
-        .map(|(bookmark, _)| {
-            let mut spans = vec![
-                Span::styled(
-                    format!(
-                        "{:>10} ",
-                        mbm_sink::date_only(bookmark.created_at.unwrap_or(bookmark.ingested_at))
-                    ),
-                    Style::default().fg(style::MUTED),
-                ),
-                Span::styled(
-                    format!("{:<13}", bookmark.source.medium.name()),
-                    Style::default().fg(style::MUTED),
-                ),
-                Span::raw(mbm_sink::display_title(bookmark)),
-            ];
-            if let Some(author) = &bookmark.author {
-                spans.push(Span::styled(
-                    format!("  {}", author.display()),
-                    Style::default().fg(style::MUTED),
-                ));
-            }
-            if !bookmark.tags.is_empty() {
-                let tags: Vec<String> = bookmark.tags.iter().take(4).cloned().collect();
-                spans.push(Span::styled(
-                    format!("  {}", tags.join(" ")),
-                    Style::default().fg(style::MUTED),
-                ));
-            }
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {} ", app.list_label()))
-                .border_style(Style::default().fg(style::MUTED)),
-        )
-        .highlight_style(Style::default().bg(style::SELECTED).add_modifier(Modifier::BOLD));
-
-    let mut state = ListState::default();
-    state.select(Some(app.selected.min(app.items.len().saturating_sub(1))));
-    frame.render_stateful_widget(list, area, &mut state);
-}
-
-fn draw_detail(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let Some(bookmark) = app.selected_item() else {
-        return;
-    };
-
-    // an explicit list of lines rather than a `Text` built by appending: a
-    // blank row has to be a real `Line::default()`, and that is the one thing
-    // a string-appending builder makes easy to get wrong
-    let mut lines: Vec<Line<'_>> = Vec::new();
-    let muted = Style::default().fg(style::MUTED);
-
-    lines.push(Line::from(Span::styled(
-        mbm_sink::display_title(bookmark),
-        Style::default().fg(style::ACCENT).add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::default());
-
-    let mut byline: Vec<Span<'_>> = Vec::new();
-    if let Some(when) = bookmark.created_at {
-        byline.push(Span::styled(mbm_sink::date_time(when), muted));
-    }
-    if let Some(author) = &bookmark.author {
-        byline.push(Span::raw(format!("  {}", author.display())));
-    }
-    if let Some(collection) = &bookmark.source.collection {
-        byline.push(Span::styled(format!("  {collection}"), muted));
-    }
-    if !byline.is_empty() {
-        lines.push(Line::from(byline));
-    }
-    lines.push(Line::default());
-
-    if let Some(url) = &bookmark.url {
-        lines.push(Line::from(Span::styled(url.to_string(), Style::default().fg(style::ACCENT))));
-        lines.push(Line::default());
-    }
-
-    if let Some(summary) = mbm_sink::summary_of(bookmark) {
-        lines.push(Line::from(Span::raw(summary.to_owned())));
-        lines.push(Line::default());
-    }
-
-    for line in bookmark.text.lines() {
-        lines.push(Line::from(line.to_owned()));
-    }
-
-    if !bookmark.links.is_empty() {
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled("links", muted)));
-        for link in &bookmark.links {
-            let blocked =
-                link.blocked.map(|reason| format!("  [{}]", reason.name())).unwrap_or_default();
-            lines.push(Line::from(format!("  {}{}", link.resolved, blocked)));
-        }
-    }
-    if !bookmark.tags.is_empty() {
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            format!("tags: {}", bookmark.tags.iter().cloned().collect::<Vec<_>>().join(" ")),
-            muted,
-        )));
-    }
-    if !bookmark.categories.is_empty() {
-        lines.push(Line::from(Span::styled(
-            format!(
-                "in: {}",
-                bookmark.categories.iter().map(|c| c.slug.as_str()).collect::<Vec<_>>().join(" ")
-            ),
-            muted,
-        )));
-    }
-    lines.push(Line::default());
-    lines.push(Line::from(Span::styled(format!("id {}", bookmark.id.get()), muted)));
-
-    frame.render_widget(
-        Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false }).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" detail — esc to go back ")
-                .border_style(Style::default().fg(style::MUTED)),
-        ),
-        area,
-    );
-}
-
-fn draw_tags(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    if app.tags.is_empty() {
-        frame.render_widget(
-            Paragraph::new("no tags yet.")
-                .style(Style::default().fg(style::MUTED))
-                .block(Block::default().borders(Borders::ALL)),
-            area,
-        );
-        return;
-    }
-    let items: Vec<ListItem<'_>> = app
-        .tags
-        .iter()
-        .map(|(tag, count)| {
-            ListItem::new(Line::from(vec![
-                Span::raw(tag.clone()),
-                Span::styled(format!("  {count}"), Style::default().fg(style::MUTED)),
-            ]))
-        })
-        .collect();
-    frame.render_widget(
-        List::new(items).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" tags ")
-                .border_style(Style::default().fg(style::MUTED)),
-        ),
-        area,
-    );
-}
-
-fn draw_status(frame: &mut Frame<'_>, area: Rect, app: &App) {
-    let (total, _) = app.totals();
-    let shown = if app.items.len() == total {
-        format!("{total} bookmarks")
-    } else {
-        format!("{} of {} bookmarks", app.items.len(), total)
-    };
-    let left = format!("{shown} · {}", mode_label(app.mode));
-    let middle = app.status.to_string();
-    let right = "↑↓ move · enter open · tab rank · f2 tag · ctrl-d remove · ctrl-u undo · ctrl-g tags ·          ctrl-c quit";
-
-    let line = Line::from(vec![
-        Span::styled(format!(" {left} "), Style::default().fg(style::MUTED)),
-        Span::styled(
-            format!("│ {middle} "),
-            Style::default().fg(if middle.contains("could not") {
-                style::WARN
-            } else {
-                style::MUTED
-            }),
-        ),
-        Span::styled(right.to_owned(), Style::default().fg(style::MUTED)),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
-}
-
-/// a centred box, for a future modal.
-pub fn centred(area: Rect, percent_x: u16, percent_y: u16) -> Rect {
-    let vertical = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(area);
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(vertical[1])[1]
 }
 
 /// a terminal error, in the shape the workspace uses.
@@ -780,6 +638,12 @@ fn backend<E: std::fmt::Display>(error: E) -> Error {
 ///
 /// this is the one function here that touches the real terminal, and it is
 /// written so the rest of the file never has to.
+///
+/// the appearance is settled before the first frame, because a theme that
+/// changed halfway through would repaint every colour on screen at once and
+/// there is no transition to soften that. the terminal is asked what its
+/// background is and the answer is used; a terminal that will not answer falls
+/// back to dark, and `MBM_THEME` overrides both.
 pub fn run(conn: Arc<std::sync::Mutex<Connection>>, query: &str) -> Result<()> {
     use crossterm::execute;
     use crossterm::terminal::{
@@ -787,13 +651,16 @@ pub fn run(conn: Arc<std::sync::Mutex<Connection>>, query: &str) -> Result<()> {
     };
 
     enable_raw_mode().map_err(ui)?;
+    let theme = resolve_theme();
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen).map_err(ui)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).map_err(ui)?;
+    let size = terminal.size().map_err(ui)?;
 
     let mut app = App::new(conn, query);
-    let outcome = event_loop(&mut terminal, &mut app);
+    app.set_rows(usize::from(size.height).saturating_sub(2));
+    let outcome = event_loop(&mut terminal, &mut app, &theme);
 
     disable_raw_mode().map_err(ui)?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen).map_err(ui)?;
@@ -801,35 +668,77 @@ pub fn run(conn: Arc<std::sync::Mutex<Connection>>, query: &str) -> Result<()> {
     outcome
 }
 
-fn event_loop<B>(terminal: &mut Terminal<B>, app: &mut App) -> Result<()>
+/// the palette to draw with.
+///
+/// the terminal's own background decides, because a palette chosen for the
+/// wrong one is unreadable rather than merely ugly: the dark palette's secondary
+/// text is 9:1 on near-black and 1.9:1 on white. three overrides, in order of
+/// how much they are about the answer rather than about the person:
+/// `MBM_THEME` names the appearance outright, `NO_COLOR` drops to the terminal's
+/// own sixteen, and failing all of that the terminal is asked.
+fn resolve_theme() -> Theme {
+    if let Ok(asked) = std::env::var("MBM_THEME") {
+        let asked = asked.trim().to_ascii_lowercase();
+        if asked == "light" {
+            return Theme::for_appearance(Appearance::Light);
+        }
+        if asked == "dark" {
+            return Theme::for_appearance(Appearance::Dark);
+        }
+    }
+    if std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty()) {
+        // the palette a terminal without colour support draws is the one it
+        // draws itself, so the interface stops asking for anything
+        return Theme::no_colour();
+    }
+    match theme::terminal_background() {
+        Some(rgb) => Theme::for_appearance(Appearance::from_background(rgb)),
+        None => Theme::for_appearance(Appearance::Dark),
+    }
+}
+
+fn event_loop<B>(terminal: &mut Terminal<B>, app: &mut App, theme: &Theme) -> Result<()>
 where
     B: ratatui::backend::Backend,
     B::Error: std::fmt::Display,
 {
     use crossterm::event::{self, Event, KeyEventKind};
 
+    let motion = Motion::default();
     loop {
-        terminal.draw(|frame| draw(frame, app)).map_err(backend)?;
+        terminal.draw(|frame| draw::draw(frame, app, theme, motion)).map_err(backend)?;
 
-        // the wait has a timeout, because the rebuild that ends a burst of
-        // typing is owed whether or not another key is coming. blocking on the
-        // next key instead leaves the last characters of a query unsearched
-        // until the person presses something else.
+        // a repaint is only worth doing when something changed, and something
+        // changes in three ways: a key arrived, the terminal was resized, or an
+        // animation is still running. polling with a short timeout covers all
+        // three in one place, and the frame above is skipped entirely when
+        // none of them is true, so an idle interface costs no writes at all.
         if !event::poll(std::time::Duration::from_millis(40)).map_err(ui)? {
+            // the rebuild that ends a burst of typing is owed whether or not
+            // another key is coming: blocking on the next key instead leaves the
+            // last characters of a query unsearched
             app.settle();
             continue;
         }
-        let Event::Key(key) = event::read().map_err(ui)? else {
-            continue;
-        };
-        // windows and some terminals send both press and release; a release
-        // would type a character twice
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
-        if !app.act(action_for(&key)) {
-            app.settle();
-            return Ok(());
+        match event::read().map_err(ui)? {
+            Event::Key(key) => {
+                // windows and some terminals send both press and release, and a
+                // release would type a character twice
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                if !app.act(action_for(&key)) {
+                    app.settle();
+                    return Ok(());
+                }
+            }
+            // a resize changes the column set and the row count, and both are
+            // asked for again rather than remembered
+            Event::Resize(_, height) => {
+                app.set_rows(usize::from(height).saturating_sub(2));
+                app.say("resized");
+            }
+            _ => {}
         }
     }
 }
@@ -839,16 +748,19 @@ pub fn clear<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) {
     let _ = terminal.clear();
 }
 
-/// a blank frame, for a test that only cares about the layout maths.
-pub fn blank<'a>() -> Text<'a> {
-    Text::default()
-}
-
-/// draw into a buffer, for a test.
-pub fn render_to(width: u16, height: u16, app: &mut App) -> String {
+/// draw one frame into an offscreen buffer and read it back as text.
+///
+/// the interface is a program that draws, so the only honest way to check what
+/// it drew is to let it draw. a caller that wants a string rather than a
+/// terminal gets exactly the pixels the real frame would have had, which is what
+/// the end-to-end suite asserts on.
+pub fn render_to(width: u16, height: u16, app: &mut App, theme: &Theme) -> String {
     let backend = ratatui::backend::TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("a test backend always builds");
-    terminal.draw(|frame| draw(frame, app)).expect("drawing into a test backend cannot fail");
+    app.set_rows(usize::from(height).saturating_sub(2));
+    terminal
+        .draw(|frame| draw::draw(frame, app, theme, Motion::none()))
+        .expect("drawing into a test backend cannot fail");
     let buffer = terminal.backend().buffer();
     let cols = usize::from(width);
     buffer
@@ -857,14 +769,4 @@ pub fn render_to(width: u16, height: u16, app: &mut App) -> String {
         .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect::<String>())
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-/// the colours the interface uses, exposed so a test can assert on them.
-pub fn palette() -> [Color; 4] {
-    [style::ACCENT, style::MUTED, style::SELECTED, style::WARN]
-}
-
-/// a `Clear` widget over a rect, for a future modal.
-pub fn clear_area(frame: &mut Frame<'_>, area: Rect) {
-    frame.render_widget(Clear, area);
 }
