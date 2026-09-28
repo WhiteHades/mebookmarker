@@ -256,10 +256,8 @@ pub fn open_memory() -> Result<Connection> {
 
 /// apply the pragmas and the schema to a connection the caller opened.
 pub fn prepare(conn: &Connection) -> Result<()> {
-    conn.execute_batch(PRAGMAS)
-        .map_err(|e| crate::db::store_err(&e))?;
-    conn.execute_batch(SCHEMA)
-        .map_err(|e| crate::db::store_err(&e))?;
+    conn.execute_batch(PRAGMAS).map_err(|e| crate::db::store_err(&e))?;
+    conn.execute_batch(SCHEMA).map_err(|e| crate::db::store_err(&e))?;
     // PRAGMA does not take a bound parameter, and this is a compile-time
     // constant rather than anything a caller controls.
     conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
