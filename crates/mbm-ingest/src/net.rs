@@ -879,42 +879,179 @@ const VIDEO_ID_KEY: &str = r#""videoId""#;
 /// pulled from that rather than by parsing a rendered list.
 pub fn parse_youtube_playlist(body: &[u8], playlist: &str) -> Result<Vec<Bookmark>> {
     let text = String::from_utf8_lossy(body);
-    let mut ids: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut cursor = 0usize;
-    while let Some(at) = text[cursor..].find(VIDEO_ID_KEY) {
-        let after = cursor + at + VIDEO_ID_KEY.len();
-        let Some(open) = text[after..].find('"').map(|o| after + o + 1) else { break };
-        let Some(close) = text[open..].find('"').map(|c| open + c) else { break };
-        let id = &text[open..close];
-        if !id.is_empty() && seen.insert(id) {
-            ids.push(id.to_owned());
-        }
-        cursor = close;
-    }
+    let entries = youtube_entries(&text);
 
-    if ids.is_empty() {
+    if entries.is_empty() {
         return Err(Error::Ingest(format!("{playlist} has no readable entries")));
     }
 
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
+    let mut out = Vec::with_capacity(entries.len());
+    for (id, title, channel) in entries {
         let url = format!("https://www.youtube.com/watch?v={id}");
+        let text = title.clone().unwrap_or_else(|| format!("YouTube video {id}"));
         let mut bookmark = build(
             SourceMedium::YouTube,
             id.clone(),
-            format!("YouTube video {id}"),
-            None,
+            text,
+            channel.as_deref(),
             None,
             None,
             Some(&url),
         );
+        bookmark.title = title;
         bookmark.push_tag("youtube");
+        // a video has no text until the transcript is fetched, and a stage that
+        // reads the body of a bookmark with no body finds nothing and says
+        // nothing, so the queue says so out loud
         bookmark.tags.insert("needs-transcript".to_owned());
         link(&mut bookmark, &url);
         out.push(bookmark);
     }
     Ok(out)
+}
+
+/// one entry of a playlist page: an id, and whatever the page said about it.
+type Entry = (String, Option<String>, Option<String>);
+
+/// read every entry out of a playlist page.
+///
+/// the page holds its entries as json inside a script tag, and youtube has
+/// shipped two shapes for that: `playlistVideoRenderer`, where each entry is an
+/// object with a `videoId` and a `title`, and `lockupViewModel`, which puts the
+/// id on `contentId` and the title under `metadata`. reading the json and
+/// handling both is what a rewrite of the site costs otherwise, and reading only
+/// the ids gives a bookmark whose title is its own url.
+fn youtube_entries(text: &str) -> Vec<Entry> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    if let Some(data) = embedded_json(text, "ytInitialData") {
+        collect_youtube_entries(&data, &mut out);
+    }
+    // the older pages and the client variants that some requests get back hold
+    // the entries as bare `videoId` pairs, which is all there is to read
+    collect_youtube_ids(text, &mut out);
+
+    out.retain(|(id, _, _)| !id.is_empty() && seen.insert(id.clone()));
+    out
+}
+
+/// the balanced json object that follows an assignment to `name`.
+fn embedded_json(text: &str, name: &str) -> Option<serde_json::Value> {
+    let marker = format!("{name} = ");
+    let at = text.find(&marker)? + marker.len();
+    let start = text[at..].find('{')? + at;
+    let end = balanced_end(text, start)?;
+    serde_json::from_str(&text[start..=end]).ok()
+}
+
+/// the index of the `}` that closes the object opening at `start`.
+///
+/// braces inside strings do not count, and a `"` inside a string does not end
+/// the string. counting them without that check finds the end of the wrong
+/// object about half the time on a page this size.
+fn balanced_end(text: &str, start: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, &byte) in bytes[start..].iter().enumerate() {
+        let at = start + offset;
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match byte {
+            b'\\' if in_string => escaped = true,
+            b'"' => in_string = !in_string,
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(at);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// walk the page's json and collect both entry shapes, in the order they appear.
+fn collect_youtube_entries(value: &serde_json::Value, out: &mut Vec<Entry>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, child) in map {
+                if key == "playlistVideoRenderer" || key == "lockupViewModel" {
+                    if let Some(entry) = youtube_entry(child) {
+                        out.push(entry);
+                        continue;
+                    }
+                }
+                collect_youtube_entries(child, out);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_youtube_entries(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// read one entry, whichever of the two shapes it is.
+fn youtube_entry(value: &serde_json::Value) -> Option<Entry> {
+    let pointer = |path: &str| value.pointer(path).and_then(serde_json::Value::as_str);
+
+    let id = pointer("/videoId").or_else(|| pointer("/contentId")).map(str::to_owned)?;
+
+    // the title is a `runs` array in the older shape and a `content` string in
+    // the newer one, and both are inside `title` rather than beside it
+    let title = value
+        .pointer("/title/simpleText")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            value.pointer("/title/runs").and_then(serde_json::Value::as_array).map(|runs| {
+                runs.iter()
+                    .filter_map(|run| run.get("text").and_then(serde_json::Value::as_str))
+                    .collect::<String>()
+            })
+        })
+        .or_else(|| pointer("/metadata/lockupMetadataViewModel/title/content").map(str::to_owned))
+        .filter(|title| !title.trim().is_empty());
+
+    // the channel is the first metadata row in the newer shape and a byline in
+    // the older one. a row can hold several parts and the channel is the first,
+    // with the view count and the duration after it.
+    let channel = pointer("/shortBylineText/runs/0/text")
+        .or_else(|| pointer("/shortBylineText/simpleText"))
+        .map(str::to_owned)
+        .or_else(|| {
+            value
+                .pointer("/metadata/lockupMetadataViewModel/metadata/contentMetadataViewModel/metadataRows")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|rows| rows.first())
+                .and_then(|row| row.pointer("/metadataParts/0/text/content"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .filter(|channel| !channel.trim().is_empty());
+
+    Some((id, title, channel))
+}
+
+/// the ids on a page that has no parsable entry objects.
+fn collect_youtube_ids(text: &str, out: &mut Vec<Entry>) {
+    let mut cursor = 0usize;
+    while let Some(at) = text[cursor..].find(VIDEO_ID_KEY) {
+        let after = cursor + at + VIDEO_ID_KEY.len();
+        let Some(open) = text[after..].find('"').map(|o| after + o + 1) else { break };
+        let Some(close) = text[open..].find('"').map(|c| open + c) else { break };
+        out.push((text[open..close].to_owned(), None, None));
+        cursor = close;
+    }
 }
 
 /// the youtube source.
