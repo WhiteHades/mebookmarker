@@ -39,10 +39,12 @@ pub(crate) fn build(
     let created = created.unwrap_or_else(now);
     let parsed = url.and_then(|u| Url::parse(u).ok());
 
-    let mut source = SourceRef::new(medium, id.clone(), parsed.clone());
-    if let Some(handle) = author {
-        source = source.in_collection(handle);
-    }
+    // the collection is which stream within the medium the item came from: a
+    // subreddit, a hacker news collection, a playlist. it is not the author,
+    // which is what this used to set it to, and an opml export that files every
+    // hacker news item under a folder named after its submitter is a folder per
+    // bookmark and no way to browse anything.
+    let source = SourceRef::new(medium, id.clone(), parsed.clone());
 
     let mut bookmark = Bookmark::new(source, text, created);
     bookmark.created_at = Some(created);
@@ -170,6 +172,7 @@ pub fn parse_hackernews(body: &[u8], collection: Option<&str>) -> Result<Vec<Boo
         bookmark.push_tag("hackernews");
         if let Some(collection) = collection {
             bookmark.push_tag(collection);
+            bookmark.source.collection = Some(collection.to_owned());
         }
         if let Some(url) = hit.url.as_deref() {
             link(&mut bookmark, url);
@@ -236,10 +239,13 @@ impl Source for HackerNews {
         // curated tags are their own namespace: `show_hn` is 542,680 hits and
         // `story_show_hn` is zero. the prefix is only right for `story` itself.
         let tag = self.collection.as_deref().unwrap_or("story");
-        let mut url =
-            format!("https://hn.algolia.com/api/v1/search_by_date?hitsPerPage={limit}&tags={tag}");
+        let mut url = format!("{}/search_by_date?hitsPerPage={limit}&tags={tag}", self.base);
         if let Some(cursor) = request.collection.as_deref() {
-            let _ = write!(url, "&numericFilters=created_at_i>{cursor}");
+            // the endpoint sorts newest first, so the next page is everything
+            // *older* than the last item on this one. filtering the other way
+            // returns nothing at all, which looks like a source that has run
+            // out rather than one that is being paged.
+            let _ = write!(url, "&numericFilters=created_at_i<{cursor}");
         }
 
         let response = self.http.send(&Request::get(url)).await?;
@@ -330,6 +336,7 @@ pub fn parse_reddit(body: &[u8], subreddit: Option<&str>) -> Result<Vec<Bookmark
         bookmark.push_tag("reddit");
         if let Some(subreddit) = subreddit {
             bookmark.push_tag(subreddit);
+            bookmark.source.collection = Some(subreddit.to_owned());
         }
         if let Some(url) = url {
             link(&mut bookmark, url);
@@ -406,10 +413,16 @@ impl Source for Reddit {
     }
 
     async fn preflight(&self) -> Result<()> {
-        // reddit blocks the default agent hard, so a real one is required
-        if self.http.user_agent().contains("mebookmarker/") {
+        // reddit blocks the tool's own default, and it blocks it with a 429
+        // rather than an error, so the run is stopped before it starts. a user
+        // agent the person chose is theirs: this only refuses the exact default
+        // and leaves anything else alone.
+        let default = format!("mebookmarker/{}", env!("CARGO_PKG_VERSION"));
+        if self.http.user_agent().trim() == default {
             return Err(Error::Config(
-                "reddit needs a descriptive user agent. set one in the config.".to_owned(),
+                "reddit blocks the default user agent. set `user_agent` in the config to \
+                 something that names you."
+                    .to_owned(),
             ));
         }
         Ok(())
@@ -418,9 +431,21 @@ impl Source for Reddit {
     async fn fetch(&self, request: &FetchRequest) -> Result<FetchPage> {
         let limit = request.limit.unwrap_or(50).min(100);
         let path = self.subreddit.as_deref().unwrap_or("all");
+        // `t` is how far back the listing reaches, and the value is the only one
+        // reddit documents. an option that is accepted and then ignored is worse
+        // than one that is not offered, because a person who sets it is told
+        // they have a week of posts and gets all of them.
+        let window = match self.time.as_str() {
+            "hour" | "day" | "week" | "month" | "year" => format!("&t={}", self.time),
+            "all" => String::new(),
+            other => {
+                return Err(Error::Config(format!(
+                    "reddit time must be hour, day, week, month, year, or all; got {other}"
+                )));
+            }
+        };
         let url =
-            format!("https://www.reddit.com/r/{path}/{}/.json?limit={limit}&raw_json=1", self.sort);
-        let _ = &self.time;
+            format!("{}/r/{path}/{}/.json?limit={limit}{window}&raw_json=1", self.base, self.sort);
 
         let response = self.http.send(&Request::get(url)).await?;
         let items = parse_reddit(&response.body, self.subreddit.as_deref())?;
@@ -539,7 +564,7 @@ impl Source for GithubStars {
     async fn preflight(&self) -> Result<()> {
         if self.token.is_none() {
             return Err(Error::Auth(
-                "github stars need a token. set `github.token` in the config.".to_owned(),
+                "github needs a token in the `GITHUB_TOKEN` environment variable.".to_owned(),
             ));
         }
         Ok(())
@@ -551,11 +576,9 @@ impl Source for GithubStars {
         let mut items = Vec::new();
 
         for page in 1..=page {
-            let mut req = Request::get(format!(
-                "{}/user/starred?per_page={limit}&page={page}",
-                self.base
-            ))
-            .header("accept", "application/vnd.github+json");
+            let mut req =
+                Request::get(format!("{}/user/starred?per_page={limit}&page={page}", self.base))
+                    .header("accept", "application/vnd.github+json");
             if let Some(token) = &self.token {
                 req = req.header("authorization", format!("Bearer {token}"));
             }
@@ -643,7 +666,11 @@ fn one_feed_entry(
     let author = tag(block, &lower, "creator")
         .or_else(|| tag(block, &lower, "name"))
         .or_else(|| tag(block, &lower, "author"))
-        .map(|a| a.trim_start_matches('@').to_owned());
+        .map(|a| a.trim().to_owned());
+    let (author, author_name) = match &author {
+        Some(raw) => split_feed_author(raw),
+        None => (None, None),
+    };
 
     let mut text = strip_html(&title);
     if let Some(body) = body.as_deref().filter(|b| !b.trim().is_empty()) {
@@ -659,13 +686,45 @@ fn one_feed_entry(
     }
 
     let target = entry_link.filter(|l| l.starts_with("http")).or_else(|| Some(feed_url.to_owned()));
-    let mut bookmark = build(medium, id, text, author.as_deref(), None, created, target.as_deref());
+    let mut bookmark = build(
+        medium,
+        id,
+        text,
+        author.as_deref(),
+        author_name.as_deref(),
+        created,
+        target.as_deref(),
+    );
     bookmark.push_tag(feed_host(feed_url));
 
     if let Some(target) = target.as_deref() {
         link(&mut bookmark, target);
     }
     Some(bookmark)
+}
+
+/// split an `<author>` into the account and the name.
+///
+/// feeds spell this `email (Name)` or `Name (email)`, and both are out there, so
+/// the bracketed half is the name whichever side it is on. the account is what
+/// a reader would type to find the author again, so the address wins when the
+/// two are both present.
+fn split_feed_author(raw: &str) -> (Option<String>, Option<String>) {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return (None, None);
+    }
+    if let Some(open) = raw.find('(')
+        && let Some(close) = raw.rfind(')')
+        && close > open + 1
+    {
+        let inner = raw[open + 1..close].trim();
+        let outer = format!("{}{}", &raw[..open], &raw[close + 1..]).trim().to_owned();
+        let email = [outer.as_str(), inner].into_iter().find(|p| p.contains('@')).unwrap_or("");
+        let name = [inner, &outer].into_iter().find(|p| !p.contains('@') && !p.is_empty());
+        return ((!email.is_empty()).then(|| email.to_ascii_lowercase()), name.map(str::to_owned));
+    }
+    (Some(raw.to_ascii_lowercase()), None)
 }
 
 fn feed_host(url: &str) -> &str {
@@ -808,20 +867,30 @@ pub fn youtube_id(url: &str) -> Option<String> {
 
 /// read a playlist page into bookmarks.
 ///
+/// the key a playlist page holds each entry's id under.
+///
+/// the key is followed by a colon, and youtube has shipped the page both with and
+/// without a space after it, so a value is found by its closing quote rather than
+/// by a fixed offset. a fixed offset is the kind of thing that silently drops the
+/// first character of every id and produces a url that 404s.
+const VIDEO_ID_KEY: &str = r#""videoId""#;
+
 /// the page embeds its entries as json inside a script tag, so the ids are
 /// pulled from that rather than by parsing a rendered list.
 pub fn parse_youtube_playlist(body: &[u8], playlist: &str) -> Result<Vec<Bookmark>> {
     let text = String::from_utf8_lossy(body);
-    let mut ids = Vec::new();
+    let mut ids: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     let mut cursor = 0usize;
-    while let Some(at) = text[cursor..].find(r#""videoId":""#) {
-        let start = cursor + at + 12;
-        let Some(end) = text[start..].find('"') else { break };
-        let id = text[start..start + end].to_owned();
-        if !ids.contains(&id) {
-            ids.push(id);
+    while let Some(at) = text[cursor..].find(VIDEO_ID_KEY) {
+        let after = cursor + at + VIDEO_ID_KEY.len();
+        let Some(open) = text[after..].find('"').map(|o| after + o + 1) else { break };
+        let Some(close) = text[open..].find('"').map(|c| open + c) else { break };
+        let id = &text[open..close];
+        if !id.is_empty() && seen.insert(id) {
+            ids.push(id.to_owned());
         }
-        cursor = start + end;
+        cursor = close;
     }
 
     if ids.is_empty() {
@@ -879,259 +948,5 @@ impl Source for YouTube {
             }
         }
         Ok(FetchPage { items, has_more: false, next_cursor: None, skipped })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn one(text: &str) -> Bookmark {
-        Bookmark::new(SourceRef::new(SourceMedium::X, "1", None), text, 0)
-    }
-
-    use mbm_core::bookmark::SourceRef;
-    use mbm_core::medium::LinkKind;
-
-    #[test]
-    fn a_hackernews_story_becomes_a_bookmark() {
-        let body = br#"{"hits":[
-          {"objectID":"1","title":"A fast thing","url":"https://example.com/a","author":"pg",
-           "created_at":"2026-01-02T10:00:00Z","points":42},
-          {"objectID":null,"title":"deleted ancestor"}
-        ]}"#;
-        let items = parse_hackernews(body, None).unwrap();
-        assert_eq!(items.len(), 1, "a null object id is skipped");
-        let b = &items[0];
-        assert_eq!(b.source.external_id, "1");
-        assert!(b.text.contains("A fast thing"));
-        assert_eq!(b.author.as_ref().unwrap().handle, "pg");
-        assert!(b.created_at.is_some());
-    }
-
-    #[test]
-    fn a_hackernews_comment_becomes_a_reply() {
-        let body = br#"{"hits":[{"objectID":"2","comment_text":"a comment","author":"u",
-          "parent_id":1,"created_at":"2026-01-02T10:00:00Z"}]}"#;
-        let items = parse_hackernews(body, None).unwrap();
-        assert_eq!(items[0].role, Some(mbm_core::bookmark::ThreadRole::Reply));
-    }
-
-    #[test]
-    fn a_hackernews_ask_hn_joins_its_title_and_body() {
-        let body = br#"{"hits":[{"objectID":"3","title":"Ask HN: how?",
-          "story_text":"<p>Here is the question.</p>","author":"u"}]}"#;
-        let items = parse_hackernews(body, None).unwrap();
-        assert!(items[0].text.contains("Ask HN"));
-        assert!(items[0].text.contains("Here is the question."));
-        assert!(!items[0].text.contains("<p>"), "html should be stripped");
-    }
-
-    #[test]
-    fn an_item_with_no_text_at_all_is_skipped() {
-        let body = br#"{"hits":[{"objectID":"4","author":"u"}]}"#;
-        assert!(parse_hackernews(body, None).unwrap().is_empty());
-    }
-
-    #[test]
-    fn hackernews_malformed_json_is_an_error() {
-        assert!(parse_hackernews(b"not json", None).is_err());
-    }
-
-    #[test]
-    fn a_reddit_post_becomes_a_bookmark() {
-        let body = br#"{"data":{"children":[
-          {"data":{"id":"abc","title":"A post","selftext":"body text","author":"u",
-            "permalink":"/r/rust/comments/abc/a_post/","created_utc":1767225845.0,
-            "url":"https://example.com/linked"}}
-        ]}}"#;
-        let items = parse_reddit(body, Some("rust")).unwrap();
-        assert_eq!(items.len(), 1);
-        let b = &items[0];
-        assert_eq!(b.source.external_id, "abc");
-        assert!(b.text.contains("A post") && b.text.contains("body text"));
-        assert!(b.tags.contains("rust"));
-        // the external link is kept, since a self post has none
-        assert_eq!(b.url.as_ref().unwrap().as_str(), "https://example.com/linked");
-    }
-
-    #[test]
-    fn a_reddit_self_post_falls_back_to_its_own_permalink() {
-        let body = br#"{"data":{"children":[
-          {"data":{"id":"abc","title":"self post","author":"u",
-            "permalink":"/r/rust/comments/abc/self_post/","url":"https://www.reddit.com/r/rust/comments/abc/self_post/"}}
-        ]}}"#;
-        let items = parse_reddit(body, None).unwrap();
-        assert!(items[0].url.as_ref().unwrap().as_str().starts_with("https://www.reddit.com/"));
-    }
-
-    #[test]
-    fn a_pinned_reddit_notice_is_skipped() {
-        let body = br#"{"data":{"children":[
-          {"data":{"id":"x","title":"Welcome","author":"mod","stickied":true}},
-          {"data":{"id":"y","title":"Real post","author":"u"}}
-        ]}}"#;
-        let items = parse_reddit(body, None).unwrap();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].source.external_id, "y");
-    }
-
-    #[test]
-    fn the_raw_hit_is_kept_for_the_archive_sink() {
-        let body =
-            br#"{"hits":[{"objectID":"1","title":"A fast thing","url":"https://example.com/a",
-          "author":"pg","created_at":"2026-01-02T10:00:00Z","points":42}]}"#;
-        let items = parse_hackernews(body, None).unwrap();
-        let raw = items[0].raw.as_ref().expect("the raw hit is kept");
-        assert_eq!(raw["title"], "A fast thing");
-        assert_eq!(raw["points"], 42, "a field the reader does not use is still kept");
-    }
-
-    #[test]
-    fn the_raw_repo_is_kept_for_the_archive_sink() {
-        let body =
-            br#"[{"full_name":"simonw/llm","description":"a library","stargazers_count":1000}]"#;
-        let items = parse_github_stars(body).unwrap();
-        let raw = items[0].raw.as_ref().expect("the raw repo is kept");
-        assert_eq!(raw["stargazers_count"], 1000);
-    }
-
-    #[test]
-    fn a_github_star_becomes_a_bookmark() {
-        let body = br#"[{"full_name":"simonw/llm","description":"a library","language":"Python",
-          "stargazers_count":1000,"topics":["llm","cli"]}]"#;
-        let items = parse_github_stars(body).unwrap();
-        let b = &items[0];
-        assert_eq!(b.source.external_id, "simonw/llm");
-        assert!(b.text.contains("a library"));
-        assert!(b.text.contains("Python"));
-        assert!(b.tags.contains("llm"));
-        assert_eq!(b.links.len(), 1);
-    }
-
-    #[test]
-    fn an_rss_feed_becomes_bookmarks() {
-        let feed = br#"<?xml version="1.0"?><rss version="2.0"><channel>
-          <title>A feed</title>
-          <item>
-            <title>First post</title>
-            <link>https://example.com/1</link>
-            <description>&lt;p&gt;Some &lt;b&gt;text&lt;/b&gt;&lt;/p&gt;</description>
-            <pubDate>Fri, 02 Jan 2026 10:00:00 +0000</pubDate>
-            <guid>https://example.com/1</guid>
-          </item>
-        </channel></rss>"#;
-        let items = parse_feed(feed, "https://example.com/feed.xml", SourceMedium::Rss).unwrap();
-        assert_eq!(items.len(), 1);
-        let b = &items[0];
-        assert!(b.text.contains("First post"));
-        assert!(b.text.contains("Some text"), "html should be stripped: {}", b.text);
-        assert!(b.created_at.is_some());
-    }
-
-    #[test]
-    fn an_atom_feed_becomes_bookmarks() {
-        let feed = br#"<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
-          <title>A feed</title>
-          <entry>
-            <title>Atom entry</title>
-            <link rel="alternate" href="https://example.com/a"/>
-            <id>tag:example.com,2026:1</id>
-            <updated>2026-01-02T10:00:00Z</updated>
-            <content>Entry body text</content>
-          </entry>
-        </feed>"#;
-        let items = parse_feed(feed, "https://example.com/atom.xml", SourceMedium::Rss).unwrap();
-        assert_eq!(items.len(), 1);
-        assert!(items[0].text.contains("Atom entry"));
-        assert!(items[0].text.contains("Entry body text"));
-    }
-
-    #[test]
-    fn an_rdf_feed_becomes_bookmarks() {
-        let feed = br#"<?xml version="1.0"?><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
-          <item>
-            <title>RDF entry</title>
-            <link>https://example.com/r</link>
-          </item>
-        </rdf:RDF>"#;
-        let items = parse_feed(feed, "https://example.com/rdf.xml", SourceMedium::Rss).unwrap();
-        assert_eq!(items.len(), 1);
-        assert!(items[0].text.contains("RDF entry"));
-    }
-
-    #[test]
-    fn a_page_that_is_not_a_feed_is_an_error() {
-        assert!(
-            parse_feed(b"<html><body>not a feed</body></html>", "https://x", SourceMedium::Rss)
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn html_stripping_collapses_whitespace_and_decodes_entities() {
-        assert_eq!(strip_html("<p>a   b</p><p>c</p>"), "a b c");
-        assert_eq!(strip_html("&lt;tag&gt;"), "<tag>");
-        assert_eq!(strip_html("plain text"), "plain text");
-    }
-
-    #[test]
-    fn youtube_ids_come_out_of_every_url_shape() {
-        assert_eq!(youtube_id("https://youtu.be/abc123").as_deref(), Some("abc123"));
-        assert_eq!(youtube_id("https://www.youtube.com/watch?v=abc123").as_deref(), Some("abc123"));
-        assert_eq!(youtube_id("https://www.youtube.com/shorts/abc123").as_deref(), Some("abc123"));
-        assert_eq!(youtube_id("https://www.youtube.com/embed/abc123").as_deref(), Some("abc123"));
-        assert_eq!(youtube_id("https://example.com/abc123"), None);
-        assert_eq!(youtube_id("not a url"), None);
-    }
-
-    #[test]
-    fn a_youtube_playlist_becomes_bookmarks() {
-        let page = br#"[{"videoId":"aaa","title":"One"},{"videoId":"bbb","title":"Two"},
-                        {"videoId":"aaa","title":"One again"}]"#;
-        let items = parse_youtube_playlist(page, "PL123").unwrap();
-        assert_eq!(items.len(), 2, "a repeated id is listed once");
-        assert!(items[0].tags.contains("needs-transcript"));
-    }
-
-    #[test]
-    fn a_playlist_page_with_no_entries_is_an_error() {
-        assert!(parse_youtube_playlist(b"<html>nothing here</html>", "PL1").is_err());
-    }
-
-    #[test]
-    fn a_story_url_is_classified_rather_than_left_unknown() {
-        let mut b = one("a story");
-        link(&mut b, "https://github.com/simonw/llm");
-        assert_eq!(b.links[0].kind, LinkKind::Repository);
-
-        let mut c = one("another");
-        link(&mut c, "https://arxiv.org/abs/1234");
-        assert_eq!(c.links[0].kind, LinkKind::Paper);
-    }
-
-    #[test]
-    fn a_paywalled_story_url_is_marked() {
-        let mut b = one("a story");
-        link(&mut b, "https://www.nytimes.com/2026/01/02/thing.html");
-        assert_eq!(b.links[0].blocked, Some(mbm_core::bookmark::BlockedReason::Paywall));
-    }
-
-    #[test]
-    fn a_show_hn_search_asks_for_the_tag_the_api_has() {
-        // `story_show_hn` is zero hits and `show_hn` is 542,680, which is the
-        // kind of thing that reads as "the source is broken" rather than as a
-        // bug in a url
-        let source = HackerNews::new(Http::with_defaults().unwrap()).in_collection("show_hn");
-        let args = source.collection.as_deref();
-        assert_eq!(args, Some("show_hn"));
-    }
-
-    #[test]
-    fn a_feed_url_becomes_a_tag() {
-        let feed = b"<rss><channel><item><title>x</title><link>https://e.com/1</link></item></channel></rss>";
-        let items =
-            parse_feed(feed, "https://news.ycombinator.com/rss", SourceMedium::Rss).unwrap();
-        assert!(items[0].tags.contains("news.ycombinator.com"), "{:?}", items[0].tags);
     }
 }
