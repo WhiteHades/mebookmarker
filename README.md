@@ -177,24 +177,44 @@ This matters more than a feature list, so it is stated plainly.
 **Verified end to end, against the live services, with real data:**
 
 - `hackernews` — fetched from the algolia api, enriched, searched, exported
-- `rss` — the reader handles rss 2.0, rdf, and atom
+- `youtube` — a real playlist read, with its titles and its channels. youtube
+  ships two different shapes for a playlist page and both are read
+- `rss` — the reader handles rss 2.0, rdf, and atom, and a feed's own `pubDate`
 - `add`, `import`, `search`, `list`, `show`, `tag`, `delete`, `stats`, `export`,
-  `enrich`, `config`, `tui` — every command, driven against a real store
+  `enrich`, `config`, `rebuild`, `tui` — every command, against a real store
 - the `tags` and `categorize` stages — against the live gateway, picking a real
   category and a real tag and saving both
 - the `describe` stage — against a live `codex` invocation
 - all eight output formats, written from a store of mixed real data
+- the terminal interface — driven in a pty at five widths and in two
+  appearances, with the pointer and with the keyboard, and every contrast pair
+  in the palette measured against the requirement it carries
 
 **Tested against recorded responses, but not against the live service:**
 
-- the `x` graphql request half. the parsing half is covered by tests against
-  recorded responses, because that is where the bugs live. the request half
-  needs a session, so it is not covered by an automated test. the first run
-  against the real endpoint is where it gets checked, and the adapter reports a
-  changed response shape as an error rather than as an empty bookmark list,
-  because a silent empty result is the worst thing it could do.
-- `reddit`, `github`, `youtube`, and the browser and file readers — the parsing
-  halves are covered; the request halves need an account or a cookie.
+- the `x` graphql request half. the parsing half is covered end to end against a
+  server speaking the real protocol, because that is where the bugs live. the
+  request half needs a session, so it is not covered by an automated test. the
+  first run against the real endpoint is where it gets checked, and the adapter
+  reports a changed response shape as an error rather than as an empty bookmark
+  list, because a silent empty result is the worst thing it could do.
+- `reddit` — the parsing half is covered end to end. reddit now answers a
+  request arriving from a datacentre address with a 403 and a redirect to a
+  login, under any user agent, so the anonymous listing this adapter reads is
+  not reachable from here and the adapter needs the api's own authentication
+  before it works on this network. that is a gap and it is a real one.
+- `github` — the parsing half is covered end to end. the request half needs a
+  token in `GITHUB_TOKEN`.
+
+**Known limits, stated rather than left to be found:**
+
+- the interface reads `COLORFGBG` for its appearance. a terminal that does not
+  set it gets the dark palette, and `MBM_THEME` overrides either.
+- motion is off or on as a whole. there is no per-animation preference, because
+  a terminal gives the program no way to read one.
+- no screen reader was available. the interface was checked with the keyboard
+  and with the pointer, and by reading the frames it draws, and not by an
+  assistive technology.
 
 ## Search
 
