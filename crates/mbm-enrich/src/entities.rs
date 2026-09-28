@@ -131,12 +131,6 @@ impl Enricher for Entities {
             });
         }
 
-        // the hosts are facts about the item, and a person searching their
-        // archive wants `mbm list -t arxiv.org` to work the moment the item
-        // lands, rather than only after the tag stage has paid for a question
-        let hosts: Vec<String> =
-            found.iter().filter_map(|link| link.resolved.host_str().map(str::to_owned)).collect();
-
         // the links already on the bookmark came from whoever read it: a
         // browser folder, a feed's own target, a `- **Filed:**` line in an
         // archive file. replacing them would throw away context this stage never
@@ -152,6 +146,21 @@ impl Enricher for Entities {
             position(a).cmp(&position(b)).then_with(|| a.resolved.as_str().cmp(b.resolved.as_str()))
         });
         bookmark.links = found;
+
+        // the hosts come after the merge, because the merged set is where the
+        // links a reader arrived with live, and those hosts are facts about the
+        // item too. the item's own address counts: a person who saved a thread
+        // and later wants everything from that site should not have to wait for
+        // the tag stage to pay a model for an answer the url already holds.
+        //
+        // this is collected here rather than only from the text because a link
+        // that appears in the body is not the only link an item has.
+        let hosts: Vec<String> = bookmark
+            .links
+            .iter()
+            .filter_map(|link| link.resolved.host_str().map(str::to_owned))
+            .chain(bookmark.url.as_ref().and_then(|url| url.host_str()).map(str::to_owned))
+            .collect();
         for host in hosts {
             bookmark.push_tag(host);
         }
