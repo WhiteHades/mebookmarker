@@ -18,17 +18,38 @@ use tracing_subscriber::EnvFilter;
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // a filter before anything else, because a log line written before the
-    // subscriber exists goes nowhere and a person debugging a run needs them
+    // the filter goes in before anything else, because a log line written
+    // before the subscriber exists goes nowhere and a person debugging a run
+    // needs them.
+    //
+    // `-vv` turns on debug for *this program's* crates and nothing else. a bare
+    // `debug` turns it on for the http stack as well, and what a person then
+    // sees first is three lines about certificate roots and one line per
+    // connection attempt: on a run against a real source that is a screenful of
+    // a program's own plumbing between the line they asked for and the result.
+    // the transport is not what `-vv` is for. `MBM_LOG` takes the whole filter
+    // when it is.
     let filter = if cli.quiet {
-        "error"
+        "error".to_owned()
     } else {
         match cli.verbose {
-            0 => "warn,mbm_app=info",
-            1 => "info",
-            _ => "debug",
+            0 => "warn,mbm_app=info".to_owned(),
+            1 => "info".to_owned(),
+            _ => [
+                "info",
+                "mbm_agent=debug",
+                "mbm_core=debug",
+                "mbm_enrich=debug",
+                "mbm_extract=debug",
+                "mbm_ingest=debug",
+                "mbm_jev=debug",
+                "mbm_sink=debug",
+                "mbm_store=debug",
+            ]
+            .join(","),
         }
     };
+    let filter = std::env::var("MBM_LOG").unwrap_or(filter);
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new(filter))
         .with_target(false)
