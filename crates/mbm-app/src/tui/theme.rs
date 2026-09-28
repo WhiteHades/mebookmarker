@@ -44,7 +44,7 @@ impl Appearance {
     /// the crossover sits at 50% of the background's relative luminance, which
     /// is not the same as the midpoint of its channel values: a terminal set to
     /// `#202020` is dark, and one set to `#303030` is dark too, while `#808080`
-    /// is light. the ramp in [`oklab`] lightness is the right question to ask,
+    /// is light. the ramp in oklab lightness is the right question to ask,
     /// because perceived lightness is what a reader actually sees.
     #[must_use]
     pub fn from_background(rgb: (u8, u8, u8)) -> Self {
