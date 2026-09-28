@@ -1926,20 +1926,170 @@ fn the_terminal_interface_draws_a_list_a_detail_and_a_search() {
     mock.route("/search_by_date", HACKER_NEWS);
     let archive = Archive::new("tui");
     archive.config(&format!(
-        "data_dir = \"{{data}}\"\n\n[[sources]]\nmedium = \"hacker-news\"\nenabled = true\n\n[sources.options]\nbase = \"{}\"\n",
+        "data_dir = \"{{data}}\"\n\n[[sources]]\nmedium = \"hacker-news\"\nenabled = true\n\n\
+         [sources.options]\nbase = \"{}\"\n",
         mock.base()
     ));
     archive.ok(&["run", "-n", "5"]);
 
-    // the process id is in the name because a session left behind by a run that
-    // panicked would otherwise answer for this one, and the frame under test
-    // would be a picture of the last failure
-    let session =
-        format!("mbm-e2e-{}-{}", std::process::id(), COUNTER.fetch_add(1, Ordering::SeqCst));
-    let _ = Command::new("tmux").args(["kill-session", "-t", &session]).status();
-    let start = Command::new("tmux")
-        .current_dir(&archive.root)
-        .args(["new-session", "-d", "-s", &session, "-x", "100", "-y", "24"])
+    let session = Session { name: start_session(&archive, 100, 28) };
+    std::thread::sleep(std::time::Duration::from_millis(1200));
+
+    // the field, the list, the ranking and the help are all on screen at once,
+    // because a person needs all four before they can do anything
+    let browse = capture(&session.name);
+    assert!(browse.contains("search"), "no query field:\n{browse}");
+    assert!(browse.contains("hybrid"), "the ranking is not shown:\n{browse}");
+    assert!(browse.contains("Boonful"), "no items:\n{browse}");
+    assert!(browse.contains("3 bookmarks"), "no count:\n{browse}");
+    assert!(browse.contains("\u{2191}\u{2193} move"), "no key help:\n{browse}");
+    assert!(browse.contains("^u undo"), "undo is not advertised:\n{browse}");
+    // the selected row is marked three ways, so it survives a monochrome
+    // terminal and a reader who cannot tell the two colours apart
+    assert!(browse.contains("\u{258e}"), "no selection marker:\n{browse}");
+
+    // typing filters the list, and the count follows
+    send(&session.name, "Boonful");
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let searched = capture(&session.name);
+    assert!(searched.contains("search Boonful"), "{searched}");
+    assert!(searched.contains("1 of 3"), "the count did not follow the filter:\n{searched}");
+
+    // enter opens the item, and each part of it gets its own line
+    send(&session.name, "Enter");
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let detail = capture(&session.name);
+    assert!(detail.contains("atifhub"), "the author is missing:\n{detail}");
+    assert!(detail.contains("boonful.io"), "the url is missing:\n{detail}");
+    assert!(detail.contains("boonful is live"), "the body is missing:\n{detail}");
+    assert!(detail.contains("id "), "the id is missing:\n{detail}");
+
+    // escape goes back to the same row, not to the top
+    send(&session.name, "Escape");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let back = capture(&session.name);
+    assert!(back.contains("search Boonful"), "escape lost the query:\n{back}");
+
+    // ctrl-k clears it, and the whole archive comes back
+    send(&session.name, "C-k");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let cleared = capture(&session.name);
+    assert!(cleared.contains("3 bookmarks"), "clearing did not restore the list:\n{cleared}");
+
+    // the tag list is a list, not a picture of one: picking a tag filters
+    send(&session.name, "C-g");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let tags = capture(&session.name);
+    assert!(tags.contains("hackernews"), "the tag list is empty:\n{tags}");
+    send(&session.name, "Enter");
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let filtered = capture(&session.name);
+    assert!(
+        filtered.contains("showing 3 with hackernews"),
+        "picking a tag did not filter: {filtered}"
+    );
+
+    send(&session.name, "C-c");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+}
+
+#[test]
+fn the_terminal_interface_narrows_without_losing_the_title() {
+    // a terminal is 24 rows on a laptop and 60 on a desk, and a person reading
+    // a list in a 60-column pane is not doing something unusual. the columns
+    // give way in the order of how much each says, and the title never does:
+    // it is the only column that says what the row is.
+    if !tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let mock = Mock::start();
+    mock.route("/search_by_date", HACKER_NEWS);
+    let archive = Archive::new("tui-narrow");
+    archive.config(&format!(
+        "data_dir = \"{{data}}\"\n\n[[sources]]\nmedium = \"hacker-news\"\nenabled = true\n\n\
+         [sources.options]\nbase = \"{}\"\n",
+        mock.base()
+    ));
+    archive.ok(&["run", "-n", "5"]);
+
+    for (width, height) in [(120, 30), (100, 24), (80, 24), (60, 20), (44, 16)] {
+        let session = Session { name: start_session(&archive, width, height) };
+        std::thread::sleep(std::time::Duration::from_millis(900));
+        let frame = capture(&session.name);
+        // characters, not bytes: a terminal cell is one character, and the row
+        // is full of glyphs that are three bytes each
+        let longest = frame.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+        assert!(
+            longest <= usize::from(width),
+            "at {width}x{height} a row is {longest} cells wide and wraps:\n{frame}"
+        );
+        assert!(frame.contains("Boonful"), "at {width}x{height} the title is gone:\n{frame}");
+        assert!(frame.contains("bookmarks"), "at {width}x{height} the count is gone:\n{frame}");
+        // the help is the first thing to go, and the count is the last
+        if width >= 100 {
+            assert!(frame.contains("move"), "at {width} the key help is gone:\n{frame}");
+        }
+    }
+}
+
+#[test]
+fn the_terminal_interface_reports_contrast_it_measured() {
+    // the palette is not a matter of taste and the check is not a comment: the
+    // binary draws a frame, the pairs the frame uses are read back out of the
+    // buffer, and each is compared against the requirement it carries.
+    let report = Command::new("cargo")
+        .args(["run", "-q", "-p", "mbm-app", "--example", "contrast-check"])
+        .output()
+        .expect("cargo runs");
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&report.stdout),
+        String::from_utf8_lossy(&report.stderr)
+    );
+    assert!(report.status.success(), "a pair is below its requirement:\n{out}");
+    assert!(out.contains("=== Dark ==="), "the dark palette was not measured:\n{out}");
+    assert!(out.contains("=== Light ==="), "the light palette was not measured:\n{out}");
+    // and it measured both of them, which is the point of measuring at all: a
+    // palette tuned for one appearance is unreadable on the other
+    assert!(out.contains("body on page"), "the body pair is missing:\n{out}");
+    assert!(out.contains("resting frame on surface"), "a frame pair is missing:\n{out}");
+}
+
+/// the tmux socket this test run owns.
+///
+/// a private socket rather than the default one, because the default is shared
+/// with every other tmux on the machine: a session left behind by a run that
+/// panicked, or by anything the person is doing, otherwise sits on it, and a
+/// capture aimed at a name that matches nothing returns an empty pane. that is
+/// not a flaky assertion, it is a wrong answer.
+fn socket() -> String {
+    format!("mbm-e2e-{}", std::process::id())
+}
+
+/// start the interface in a pty and return the session's name.
+fn start_session(archive: &Archive, width: u16, height: u16) -> String {
+    let name = format!("session-{}", COUNTER.fetch_add(1, Ordering::SeqCst));
+    // `-c` rather than the spawned process's own working directory: tmux hands
+    // the session the directory of the *server*, which is whichever tmux was
+    // first started from, and a session that opens in the wrong directory is a
+    // session whose relative paths all point somewhere else
+    let started = Command::new("tmux")
+        .args([
+            "-L",
+            &socket(),
+            "new-session",
+            "-d",
+            "-s",
+            &name,
+            "-c",
+            &archive.root.to_string_lossy(),
+            "-x",
+            &width.to_string(),
+            "-y",
+            &height.to_string(),
+        ])
         .arg(format!(
             "{} --config {} tui",
             binary().display(),
@@ -1947,39 +2097,11 @@ fn the_terminal_interface_draws_a_list_a_detail_and_a_search() {
         ))
         .env("XDG_DATA_HOME", &archive.root)
         .env("HOME", &archive.root)
+        .env("MBM_THEME", "dark")
         .status()
         .expect("tmux runs");
-    assert!(start.success(), "tmux started a session named {session}");
-    let session = Session { name: session };
-
-    // the interface needs a moment to take the terminal
-    std::thread::sleep(std::time::Duration::from_millis(900));
-
-    let browse = capture(&session.name);
-    assert!(browse.contains("search:"), "no query box:\n{browse}");
-    assert!(browse.contains("browse"), "no view label:\n{browse}");
-    assert!(browse.contains("Boonful"), "no items:\n{browse}");
-    assert!(browse.contains("hybrid"), "no ranking mode:\n{browse}");
-
-    // typing filters the list
-    send(&session.name, "Boonful");
-    std::thread::sleep(std::time::Duration::from_millis(700));
-    let searched = capture(&session.name);
-    assert!(searched.contains("search: Boonful"), "{searched}");
-    assert!(searched.contains("search · "), "a filtered list is a search:\n{searched}");
-
-    // enter opens the detail, and each part gets its own line
-    send(&session.name, "Enter");
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let detail = capture(&session.name);
-    assert!(detail.contains("detail"), "{detail}");
-    assert!(detail.contains("atifhub"), "the author is shown:\n{detail}");
-    assert!(detail.contains("boonful.io"), "the url is shown:\n{detail}");
-
-    // escape goes back
-    send(&session.name, "Escape");
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    assert!(capture(&session.name).contains("search · "), "escape did not go back");
+    assert!(started.success(), "tmux started a session named {name}");
+    name
 }
 
 /// a tmux session, killed when the test ends however it ends.
@@ -1995,7 +2117,8 @@ struct Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
-        let _ = Command::new("tmux").args(["kill-session", "-t", &self.name]).status();
+        let _ =
+            Command::new("tmux").args(["-L", &socket(), "kill-session", "-t", &self.name]).status();
     }
 }
 
@@ -2007,7 +2130,7 @@ fn tmux() -> bool {
 /// what the session is showing right now.
 fn capture(session: &str) -> String {
     let output = Command::new("tmux")
-        .args(["capture-pane", "-p", "-t", session])
+        .args(["-L", &socket(), "capture-pane", "-p", "-t", session])
         .output()
         .expect("tmux captures");
     String::from_utf8_lossy(&output.stdout).into_owned()
@@ -2015,5 +2138,5 @@ fn capture(session: &str) -> String {
 
 /// send keys to the session.
 fn send(session: &str, keys: &str) {
-    let _ = Command::new("tmux").args(["send-keys", "-t", session, keys]).status();
+    let _ = Command::new("tmux").args(["-L", &socket(), "send-keys", "-t", session, keys]).status();
 }
