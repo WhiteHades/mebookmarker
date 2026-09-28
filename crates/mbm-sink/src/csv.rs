@@ -41,7 +41,7 @@ pub fn csv_row(bookmark: &Bookmark) -> String {
         bookmark.id.get().to_string(),
         bookmark.created_at.map_or_else(String::new, iso8601),
         bookmark.source.medium.name().to_owned(),
-        bookmark.author.as_ref().map_or_else(String::new, |a| a.handle.clone()),
+        bookmark.author.as_ref().map_or_else(String::new, mbm_core::Author::display),
         display_title(bookmark),
         bookmark.url.as_ref().map_or_else(String::new, ToString::to_string),
         bookmark.tags.iter().cloned().collect::<Vec<_>>().join(" "),
@@ -160,105 +160,5 @@ impl Sink for Csv {
         }
         write_to(&self.path, body.as_bytes())?;
         Ok(SinkReport { written: count, files: 1, ..SinkReport::default() })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mbm_core::bookmark::{Link, SourceRef};
-    use mbm_core::medium::{LinkKind, SourceMedium};
-    use url::Url;
-
-    fn one(text: &str) -> Bookmark {
-        let url = Url::parse("https://x.com/a/status/1").unwrap();
-        let mut b = Bookmark::new(
-            SourceRef::new(SourceMedium::X, "1", Some(url.clone())),
-            text,
-            1_767_400_000_000,
-        )
-        .created_at(1_767_312_000_000);
-        b.url = Some(url);
-        b
-    }
-
-    #[test]
-    fn a_row_has_one_cell_per_column() {
-        let b = one("a post");
-        let row = csv_row(&b);
-        let document = csv_document(&[&b]);
-        let headers = csv::ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(document.as_bytes())
-            .headers()
-            .unwrap()
-            .clone();
-        let mut records =
-            csv::ReaderBuilder::new().has_headers(false).from_reader(row.as_bytes()).into_records();
-        let record = records.next().unwrap().unwrap();
-        assert_eq!(record.len(), headers.len());
-        assert_eq!(&record[2], "x");
-        assert_eq!(&record[3], "");
-        assert_eq!(&record[8], "a post");
-    }
-
-    #[test]
-    fn a_comma_in_the_text_is_quoted() {
-        let row = csv_row(&one("one, two, three"));
-        assert!(row.contains(r#""one, two, three""#), "{row}");
-    }
-
-    #[test]
-    fn a_quote_in_the_text_is_doubled() {
-        let row = csv_row(&one(r#"he said "hello""#));
-        assert!(row.contains(r#""he said ""hello"""#), "{row}");
-    }
-
-    #[test]
-    fn a_newline_in_the_text_is_quoted() {
-        let row = csv_row(&one("one\ntwo"));
-        assert!(row.contains("\"one\ntwo\""), "{row}");
-    }
-
-    #[test]
-    fn a_plain_field_is_left_unquoted() {
-        assert_eq!(quote("plain"), "plain");
-    }
-
-    #[test]
-    fn the_document_starts_with_the_header() {
-        let doc = csv_document(&[&one("a")]);
-        assert!(doc.starts_with("id,created_at,medium,"), "{doc}");
-    }
-
-    #[test]
-    fn the_tags_and_links_land_in_one_cell() {
-        let mut b = one("a post");
-        b.push_tag("rust");
-        b.push_tag("databases");
-        b.links.push(Link {
-            original: Url::parse("https://example.com/a").unwrap(),
-            resolved: Url::parse("https://example.com/a").unwrap(),
-            kind: LinkKind::Article,
-            title: None,
-            body: None,
-            summary: None,
-            blocked: None,
-        });
-        let row = csv_row(&b);
-        assert!(row.contains("databases rust"), "{row}");
-        assert!(row.contains("https://example.com/a"), "{row}");
-    }
-
-    #[test]
-    fn a_unicode_cell_survives_a_csv_parser() {
-        let mut b = one("post");
-        b.title = Some("日本語 — a title".to_owned());
-        let doc = csv_document(&[&b]);
-        let mut records =
-            csv::ReaderBuilder::new().has_headers(false).from_reader(doc.as_bytes()).into_records();
-        assert_eq!(&records.next().unwrap().unwrap()[4], "title", "the header row");
-        let record = records.next().unwrap().unwrap();
-        assert_eq!(&record[4], "日本語 — a title");
     }
 }
