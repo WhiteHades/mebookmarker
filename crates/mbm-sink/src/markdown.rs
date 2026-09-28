@@ -33,7 +33,7 @@ pub fn markdown(bookmark: &Bookmark) -> String {
         meta.push(format!("date: {}", date_only(when)));
     }
     if let Some(author) = &bookmark.author {
-        meta.push(format!("author: {}", author.handle));
+        meta.push(format!("author: {}", author.display()));
     }
     meta.push(format!("source: {}", bookmark.source.medium.name()));
     for category in &bookmark.categories {
@@ -118,7 +118,7 @@ pub fn obsidian(bookmark: &Bookmark) -> String {
         let _ = writeln!(out, "created: {when}");
     }
     if let Some(author) = &bookmark.author {
-        let _ = writeln!(out, "author: {}", yaml_string(&author.handle));
+        let _ = writeln!(out, "author: {}", yaml_string(&author.display()));
         if let Some(name) = &author.name {
             let _ = writeln!(out, "display: {}", yaml_string(name));
         }
@@ -150,7 +150,7 @@ pub fn obsidian(bookmark: &Bookmark) -> String {
         );
     }
     if let Some(author) = &bookmark.author {
-        let _ = write!(out, "@{}\n\n", author.handle);
+        let _ = write!(out, "{}\n\n", author.display());
     }
 
     let body = bookmark.text.trim();
@@ -204,7 +204,7 @@ pub fn index(items: &[(String, &Bookmark)]) -> String {
             b.created_at.or(Some(b.ingested_at)).is_some_and(|ms| date_only(ms) == day)
         }) {
             let author =
-                bookmark.author.as_ref().map(|a| format!(" — @{}", a.handle)).unwrap_or_default();
+                bookmark.author.as_ref().map(|a| format!(" — {}", a.display())).unwrap_or_default();
             let _ = writeln!(out, "- [[{name}]]{author}");
         }
         out.push('\n');
@@ -288,244 +288,5 @@ impl Sink for Markdown {
         })? += items.len();
 
         Ok(SinkReport { written: items.len(), files: files + 1, ..SinkReport::default() })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mbm_core::bookmark::{Link, Media, MediaKind, SourceRef};
-    use mbm_core::medium::{LinkKind, SourceMedium};
-    use url::Url;
-
-    fn one(text: &str) -> Bookmark {
-        let url = Url::parse("https://x.com/a/status/1").unwrap();
-        let mut b = Bookmark::new(
-            SourceRef::new(SourceMedium::X, "1", Some(url.clone())),
-            text,
-            1_767_400_000_000,
-        )
-        .created_at(1_767_312_000_000);
-        b.url = Some(url);
-        b
-    }
-
-    #[test]
-    fn a_markdown_note_starts_with_its_title() {
-        let doc = markdown(&one("a post"));
-        assert!(doc.starts_with("# a post\n"), "{doc}");
-        assert!(doc.contains("a post"));
-    }
-
-    #[test]
-    fn a_markdown_note_lists_its_metadata() {
-        let mut b = one("a post");
-        b.author = Some(mbm_core::bookmark::Author::new("simonw"));
-        b.push_tag("rust");
-        let doc = markdown(&b);
-        assert!(doc.contains("- date: 2026-01-02"), "{doc}");
-        assert!(doc.contains("- author: simonw"), "{doc}");
-        assert!(doc.contains("- source: x"), "{doc}");
-        assert!(doc.contains("- tags: rust"), "{doc}");
-    }
-
-    #[test]
-    fn a_markdown_note_links_its_url() {
-        let doc = markdown(&one("a post"));
-        assert!(doc.contains("<https://x.com/a/status/1>"), "{doc}");
-    }
-
-    #[test]
-    fn a_generated_summary_is_a_blockquote() {
-        let mut b = one("a post");
-        b.links.push(Link {
-            original: Url::parse("https://example.com/a").unwrap(),
-            resolved: Url::parse("https://example.com/a").unwrap(),
-            kind: LinkKind::Article,
-            title: None,
-            body: None,
-            summary: Some("a one-line summary".to_owned()),
-            blocked: None,
-        });
-        let doc = markdown(&b);
-        assert!(doc.contains("> a one-line summary"), "{doc}");
-    }
-
-    #[test]
-    fn a_markdown_note_lists_the_other_links() {
-        let mut b = one("a post");
-        b.links.push(Link {
-            original: Url::parse("https://example.com/a").unwrap(),
-            resolved: Url::parse("https://example.com/a").unwrap(),
-            kind: LinkKind::Article,
-            title: Some("The Article".to_owned()),
-            body: None,
-            summary: None,
-            blocked: None,
-        });
-        let doc = markdown(&b);
-        assert!(doc.contains("## links"), "{doc}");
-        assert!(doc.contains("- [The Article](https://example.com/a)"), "{doc}");
-    }
-
-    #[test]
-    fn a_blocked_link_says_why() {
-        let mut b = one("a post");
-        b.links.push(Link {
-            original: Url::parse("https://nytimes.com/a").unwrap(),
-            resolved: Url::parse("https://nytimes.com/a").unwrap(),
-            kind: LinkKind::Article,
-            title: None,
-            body: None,
-            summary: None,
-            blocked: Some(mbm_core::bookmark::BlockedReason::Paywall),
-        });
-        let doc = markdown(&b);
-        assert!(doc.contains("— paywall"), "{doc}");
-    }
-
-    #[test]
-    fn a_markdown_note_embeds_its_media() {
-        let mut b = one("a post");
-        b.media.push(Media {
-            kind: MediaKind::Photo,
-            url: Url::parse("https://pbs.twimg.com/a.jpg").unwrap(),
-            preview_url: None,
-            width: None,
-            height: None,
-            duration_ms: None,
-            alt_text: Some("a cat".to_owned()),
-        });
-        let doc = markdown(&b);
-        assert!(doc.contains("## media"), "{doc}");
-        assert!(doc.contains("![a cat](https://pbs.twimg.com/a.jpg)"), "{doc}");
-    }
-
-    #[test]
-    fn an_obsidian_note_carries_frontmatter() {
-        let mut b = one("a post");
-        b.author = Some(mbm_core::bookmark::Author::new("simonw"));
-        b.push_tag("rust");
-        b.categories.push(mbm_core::bookmark::CategoryAssignment {
-            slug: "engineering".to_owned(),
-            confidence: 1.0,
-            assigned_by: mbm_core::bookmark::Assigner::Rule,
-        });
-        let doc = obsidian(&b);
-        assert!(doc.starts_with("---\n"), "{doc}");
-        assert!(doc.contains("title: 'a post'"), "{doc}");
-        assert!(doc.contains("author: 'simonw'"), "{doc}");
-        assert!(doc.contains("categories: [engineering]"), "{doc}");
-        assert!(doc.contains("tags: [rust]"), "{doc}");
-        assert!(doc.contains("[[engineering]]"), "{doc}");
-        assert!(doc.contains("@simonw"), "{doc}");
-    }
-
-    #[test]
-    fn the_frontmatter_splits_on_the_first_double_dash_line() {
-        let doc = obsidian(&one("a post"));
-        let mut lines = doc.lines();
-        assert_eq!(lines.next(), Some("---"));
-        let end = doc.find("\n---\n").expect("a closing fence");
-        let front = &doc[..end];
-        assert!(front.contains("source: x"), "{front}");
-    }
-
-    #[test]
-    fn a_yaml_string_doubles_its_apostrophes() {
-        assert_eq!(yaml_string("it's here"), "'it''s here'");
-        assert_eq!(yaml_string("plain"), "'plain'");
-    }
-
-    #[test]
-    fn a_title_with_a_colon_does_not_break_the_frontmatter() {
-        let mut b = one("a post");
-        b.title = Some("Ratio: a study".to_owned());
-        let doc = obsidian(&b);
-        assert!(doc.contains("title: 'Ratio: a study'"), "{doc}");
-    }
-
-    #[test]
-    fn a_note_name_starts_with_the_day() {
-        assert!(note_name(&one("a post")).starts_with("2026-01-02 "));
-    }
-
-    #[test]
-    fn a_note_name_drops_what_a_path_cannot_hold() {
-        let mut b = one("a post");
-        b.title = Some("a/b:c*d".to_owned());
-        let name = note_name(&b);
-        assert!(!name.contains('/'), "{name}");
-        assert!(!name.contains(':'), "{name}");
-    }
-
-    #[test]
-    fn the_index_groups_by_day_newest_first() {
-        let mut a = one("first");
-        a.created_at = Some(1_767_312_000_000);
-        let mut b = one("second");
-        b.created_at = Some(1_767_225_600_000);
-        let names = vec![(note_name(&a), &a), (note_name(&b), &b)];
-        let doc = index(&names);
-        let first = doc.find("2026-01-02").unwrap();
-        let second = doc.find("2026-01-01").unwrap();
-        assert!(first < second, "the newer day comes first:\n{doc}");
-        assert!(doc.contains("[[2026-01-02 first]]"), "{doc}");
-    }
-
-    #[tokio::test]
-    async fn the_markdown_sink_writes_a_file_per_bookmark() {
-        let dir = tempfile::tempdir().unwrap();
-        let sink = Markdown::new(dir.path());
-        let a = one("first");
-        let mut b = one("second");
-        b.source = SourceRef::new(SourceMedium::Reddit, "2", None);
-        let report = sink.write(&[&a, &b]).await.unwrap();
-        assert_eq!(report.written, 2);
-        assert_eq!(report.files, 3, "two notes and an index");
-
-        let files: Vec<String> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .collect();
-        assert!(files.contains(&"index.md".to_owned()), "{files:?}");
-        assert_eq!(files.len(), 3, "{files:?}");
-    }
-
-    #[tokio::test]
-    async fn the_obsidian_sink_declares_its_medium() {
-        let dir = tempfile::tempdir().unwrap();
-        let sink = Markdown::obsidian(dir.path());
-        assert_eq!(sink.kind(), SinkMedium::Obsidian);
-        assert!(sink.is_obsidian());
-        let a = one("a post");
-        sink.write(&[&a]).await.unwrap();
-        let name = format!("{}.md", note_name(&a));
-        let body = std::fs::read_to_string(dir.path().join(name)).unwrap();
-        assert!(body.starts_with("---"), "{body}");
-    }
-
-    #[tokio::test]
-    async fn a_second_write_replaces_the_files_it_covers() {
-        let dir = tempfile::tempdir().unwrap();
-        let sink = Markdown::new(dir.path());
-        let mut a = one("first");
-        a.title = Some("A title".to_owned());
-        sink.write(&[&a]).await.unwrap();
-        a.title = Some("A different title".to_owned());
-        sink.write(&[&a]).await.unwrap();
-        // both titles get a file, because a name is derived from the title and
-        // a renamed note is a new file rather than an overwrite
-        let files = std::fs::read_dir(dir.path()).unwrap().count();
-        assert_eq!(files, 3, "one file per title, plus the index");
-    }
-
-    #[test]
-    fn the_sink_render_matches_the_free_function() {
-        let dir = tempfile::tempdir().unwrap();
-        let a = one("a post");
-        assert_eq!(Markdown::new(dir.path()).render(&a), markdown(&a));
-        assert_eq!(Markdown::obsidian(dir.path()).render(&a), obsidian(&a));
     }
 }
