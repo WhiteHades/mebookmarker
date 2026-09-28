@@ -31,6 +31,14 @@ use url::Url;
 /// ships with; it is not a secret and it does not authenticate on its own.
 const GRAPHQL: &str = "https://x.com/i/api/graphql";
 
+/// the two paths every adapter in this file builds.
+///
+/// the whole reason these are fields rather than literals in the middle of a
+/// function is that a server that answers the same protocol somewhere else is
+/// then a configuration change: a mirror, a proxy, a replay, or a test.
+const DEFAULT_GRAPHQL: &str = GRAPHQL;
+const DEFAULT_POST_URL: &str = "https://x.com";
+
 /// the public bearer the web client sends.
 const BEARER: &str =
     "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAA1qcIY9SjgRzByYKt2%2FwuM2Pm6lNqCi4%2FyGeN5c4vcm9JKI4hlxj";
@@ -120,12 +128,50 @@ pub struct XClient {
     cookies: Cookies,
     folders: Vec<Folder>,
     query_id: String,
+    graphql: String,
+    post_url: String,
 }
 
 impl XClient {
     /// build a client.
     pub fn new(http: Http, cookies: Cookies) -> Self {
-        Self { http, cookies, folders: Vec::new(), query_id: BOOKMARKS_QUERY_ID.to_owned() }
+        Self {
+            http,
+            cookies,
+            folders: Vec::new(),
+            query_id: BOOKMARKS_QUERY_ID.to_owned(),
+            graphql: DEFAULT_GRAPHQL.to_owned(),
+            post_url: DEFAULT_POST_URL.to_owned(),
+        }
+    }
+
+    /// point the client at a different server.
+    ///
+    /// `graphql` is the endpoint that answers the bookmarks query, and
+    /// `post_url` is the host a permalink is built from. a server that answers
+    /// the same protocol somewhere else is then a configuration change rather
+    /// than a code change.
+    #[must_use]
+    pub fn with_endpoints(
+        mut self,
+        graphql: impl Into<String>,
+        post_url: impl Into<String>,
+    ) -> Self {
+        self.graphql = graphql.into();
+        self.post_url = post_url.into();
+        self
+    }
+
+    /// the graphql endpoint this client is pointed at.
+    #[must_use]
+    pub fn graphql(&self) -> &str {
+        &self.graphql
+    }
+
+    /// the host a permalink is built from.
+    #[must_use]
+    pub fn post_url(&self) -> &str {
+        &self.post_url
     }
 
     /// watch these bookmark folders, one fetch each.
@@ -168,7 +214,8 @@ impl XClient {
         }
 
         let url = format!(
-            "{GRAPHQL}/{}/Bookmarks?variables={}",
+            "{}/{}/Bookmarks?variables={}",
+            self.graphql,
             self.query_id,
             urlencode(&variables.to_string())
         );
@@ -289,7 +336,15 @@ impl Page {
 
     /// the bookmarks in this page.
     pub fn bookmarks(&self) -> Vec<Bookmark> {
-        self.instructions.iter().filter_map(entry).collect()
+        self.bookmarks_from(DEFAULT_POST_URL)
+    }
+
+    /// the bookmarks in this page, with permalinks built from a given host.
+    pub fn bookmarks_from(&self, post_url: &str) -> Vec<Bookmark> {
+        self.instructions
+            .iter()
+            .filter_map(|value| entry(value, post_url))
+            .collect()
     }
 }
 
@@ -306,7 +361,7 @@ fn cursor_value(entry: &Value) -> Option<String> {
 }
 
 /// read one timeline entry into a bookmark.
-fn entry(value: &Value) -> Option<Bookmark> {
+fn entry(value: &Value, post_url: &str) -> Option<Bookmark> {
     let result = value.pointer("/content/itemContent/tweet_results/result")?;
     // a tombstone is a deleted post, with a `tweetText` saying so
     let tweet = pick_tweet(result)?;
@@ -319,7 +374,7 @@ fn entry(value: &Value) -> Option<Bookmark> {
     let handle = user.get("screen_name")?.as_str()?.to_owned();
     let name = user.get("name").and_then(Value::as_str).map(str::to_owned);
 
-    let url = Url::parse(&format!("https://x.com/{handle}/status/{id}")).ok();
+    let url = Url::parse(&format!("{post_url}/{handle}/status/{id}")).ok();
     let source = SourceRef::new(SourceMedium::X, id, url.clone());
     let mut bookmark = Bookmark::new(source, text, created.unwrap_or_else(crate::net::now));
     bookmark.created_at = created;
@@ -496,7 +551,7 @@ impl Source for X {
             None => {
                 let page =
                     self.client.fetch_bookmarks(count, request.collection.as_deref()).await?;
-                let found = page.bookmarks();
+                let found = page.bookmarks_from(self.client.post_url());
                 skipped += count.saturating_sub(found.len());
                 items = found;
             }
@@ -507,7 +562,7 @@ impl Source for X {
                         .fetch_bookmarks(count, Some(&folder.id))
                         .await
                         .map_err(|e| Error::Ingest(format!("folder {}: {e}", folder.name)))?;
-                    items.extend(page.bookmarks().into_iter().map(|mut b| {
+                    items.extend(page.bookmarks_from(self.client.post_url()).into_iter().map(|mut b| {
                         b.push_tag(&folder.name);
                         b
                     }));
