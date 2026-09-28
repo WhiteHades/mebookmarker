@@ -295,7 +295,7 @@ const ATOM: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 
 /// a youtube playlist page, which embeds its entries as json in a script tag.
 const YOUTUBE_PLAYLIST: &str = r#"<!DOCTYPE html><html><body>
-<script>var ytInitialData = {"contents":{"twoColumnBrowseResultsRenderer":{"tabs":[{"tabRenderer":{"content":{"sectionListRenderer":{"contents":[{"itemSectionRenderer":{"contents":[{"playlistVideoListRenderer":{"content":{"items":[{"playlistVideoRenderer":{"videoId":"dQw4w9WgXcQ"}},{"playlistVideoRenderer":{"videoId":"aqz-KE-bpKQ"}},{"playlistVideoRenderer":{"videoId":"dQw4w9WgXcQ"}}]}}}}]}}}}]}};</script>
+<script>var ytInitialData = {"contents": {"twoColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {"sectionListRenderer": {"contents": [{"itemSectionRenderer": {"contents": [{"lockupViewModel": {"contentId": "dQw4w9WgXcQ", "contentType": "LOCKUP_CONTENT_TYPE_VIDEO", "metadata": {"lockupMetadataViewModel": {"title": {"content": "A video with a title"}, "metadata": {"contentMetadataViewModel": {"metadataRows": [{"metadataParts": [{"text": {"content": "A Channel"}}]}]}}}}}}, {"lockupViewModel": {"contentId": "aqz-KE-bpKQ", "contentType": "LOCKUP_CONTENT_TYPE_VIDEO", "metadata": {"lockupMetadataViewModel": {"title": {"content": "Another video"}, "metadata": {"contentMetadataViewModel": {"metadataRows": [{"metadataParts": [{"text": {"content": "A Channel"}}]}]}}}}}}, {"lockupViewModel": {"contentId": "dQw4w9WgXcQ", "contentType": "LOCKUP_CONTENT_TYPE_VIDEO", "metadata": {"lockupMetadataViewModel": {"title": {"content": "A repeat of the first"}}}}}, {"playlistVideoRenderer": {"videoId": "ZZZZZZZZZZZ", "title": {"runs": [{"text": "The older shape"}]}, "shortBylineText": {"runs": [{"text": "An Older Channel"}]}}}]}}]}}}}]}}};</script>
 </body></html>"#;
 
 /// a netscape bookmark export, which is html that is not html, written by every
@@ -1603,7 +1603,7 @@ fn a_feed_fetches_every_item_with_its_date_and_author() {
 }
 
 #[test]
-fn a_youtube_playlist_becomes_one_bookmark_per_video_without_the_duplicates() {
+fn a_youtube_playlist_becomes_one_bookmark_per_video_with_its_title() {
     let mock = Mock::start();
     mock.route("/playlist", YOUTUBE_PLAYLIST);
 
@@ -1615,10 +1615,28 @@ fn a_youtube_playlist_becomes_one_bookmark_per_video_without_the_duplicates() {
 
     archive.ok(&["run"]);
     let rows = archive.rows();
-    assert_eq!(rows.len(), 2, "a repeated video id was listed twice: {rows:?}");
-    let urls: Vec<String> =
-        rows.iter().filter_map(|r| r["url"].as_str().map(str::to_owned)).collect();
-    assert!(urls.contains(&"https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_owned()), "{urls:?}");
+    // four entries on the page, one of them a repeat of another
+    assert_eq!(rows.len(), 3, "{rows:?}");
+
+    // the title and the channel are on the page, so a bookmark is not just an id
+    let first = rows
+        .iter()
+        .find(|r| r["url"] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        .expect("the first video");
+    assert_eq!(first["title"].as_str(), Some("A video with a title"), "{first:?}");
+    assert_eq!(first["author"].as_str(), Some("a channel"), "{first:?}");
+
+    // and the shape youtube used before the current one still reads
+    let older = rows
+        .iter()
+        .find(|r| r["url"] == "https://www.youtube.com/watch?v=ZZZZZZZZZZZ")
+        .expect("the older shape");
+    assert_eq!(older["title"].as_str(), Some("The older shape"), "{older:?}");
+    assert_eq!(older["author"].as_str(), Some("an older channel"), "{older:?}");
+
+    // a video has no text of its own, and the queue says so rather than letting
+    // a later stage read an empty body and say nothing
+    assert!(tags_of(first).contains(&"needs-transcript".to_owned()), "{first:?}");
 }
 
 /// a store with one bookmark of every interesting shape, for the sinks to read.
