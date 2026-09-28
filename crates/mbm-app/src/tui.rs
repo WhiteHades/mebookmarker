@@ -673,9 +673,12 @@ pub fn run(conn: Arc<std::sync::Mutex<Connection>>, query: &str) -> Result<()> {
 /// the terminal's own background decides, because a palette chosen for the
 /// wrong one is unreadable rather than merely ugly: the dark palette's secondary
 /// text is 9:1 on near-black and 1.9:1 on white. three overrides, in order of
-/// how much they are about the answer rather than about the person:
-/// `MBM_THEME` names the appearance outright, `NO_COLOR` drops to the terminal's
-/// own sixteen, and failing all of that the terminal is asked.
+/// how much they are about the answer rather than about the person.
+/// `MBM_THEME` names the appearance outright and wins over everything, which is
+/// also what makes the interface testable in one appearance and reviewable in
+/// the other. `NO_COLOR` stops the interface asking for colour at all. and
+/// otherwise the terminal is asked, which is a question answered out of the
+/// environment rather than out of its input.
 fn resolve_theme() -> Theme {
     if let Ok(asked) = std::env::var("MBM_THEME") {
         let asked = asked.trim().to_ascii_lowercase();
@@ -685,16 +688,18 @@ fn resolve_theme() -> Theme {
         if asked == "dark" {
             return Theme::for_appearance(Appearance::Dark);
         }
+        if asked == "auto" {
+            // named explicitly, so the path is exercised rather than skipped
+            return Theme::for_appearance(theme::terminal_appearance().unwrap_or(Appearance::Dark));
+        }
     }
     if std::env::var("NO_COLOR").is_ok_and(|v| !v.is_empty()) {
-        // the palette a terminal without colour support draws is the one it
-        // draws itself, so the interface stops asking for anything
+        // a terminal that answers NO_COLOR is drawing its own sixteen colours,
+        // and the one thing a program must never do there is paint a background
+        // it does not own
         return Theme::no_colour();
     }
-    match theme::terminal_background() {
-        Some(rgb) => Theme::for_appearance(Appearance::from_background(rgb)),
-        None => Theme::for_appearance(Appearance::Dark),
-    }
+    Theme::for_appearance(theme::terminal_appearance().unwrap_or(Appearance::Dark))
 }
 
 fn event_loop<B>(terminal: &mut Terminal<B>, app: &mut App, theme: &Theme) -> Result<()>
