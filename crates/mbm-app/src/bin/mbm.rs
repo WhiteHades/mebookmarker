@@ -84,6 +84,7 @@ async fn dispatch(cli: &Cli) -> Result<Output> {
         Command::Stats => Ok(stats(&conn)),
         Command::Export(args) => cli::export(&conn, &config, args).await,
         Command::Enrich(args) => cli::enrich(&conn, &config, args).await,
+        Command::Rebuild(args) => cli::rebuild(&conn, &config, args).await,
         Command::Tui(args) => {
             let conn = Arc::new(Mutex::new(conn));
             mbm_app::tui::run(conn, &args.query)?;
