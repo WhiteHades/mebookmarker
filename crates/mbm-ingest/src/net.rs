@@ -185,12 +185,33 @@ pub fn parse_hackernews(body: &[u8], collection: Option<&str>) -> Result<Vec<Boo
 pub struct HackerNews {
     http: Http,
     collection: Option<String>,
+    base: &'static str,
 }
 
 impl HackerNews {
+    /// the algolia endpoint, and the only host this adapter ever talks to.
+    const API: &'static str = "https://hn.algolia.com/api/v1";
+
     /// build the adapter.
     pub fn new(http: Http) -> Self {
-        Self { http, collection: None }
+        Self { http, collection: None, base: Self::API }
+    }
+
+    /// point the adapter somewhere else.
+    ///
+    /// this is how a mirror, a proxy, or a test server is used, and it is the
+    /// only reason the endpoint is a field rather than a literal in the middle
+    /// of a function.
+    #[must_use]
+    pub fn with_base(mut self, base: impl Into<String>) -> Self {
+        self.base = Box::leak(base.into().into_boxed_str());
+        self
+    }
+
+    /// the endpoint this adapter is pointed at.
+    #[must_use]
+    pub fn base(&self) -> &str {
+        self.base
     }
 
     /// restrict to one tag, such as `show_hn` or `ask_hn`.
@@ -325,12 +346,35 @@ pub struct Reddit {
     subreddit: Option<String>,
     sort: String,
     time: String,
+    base: String,
 }
 
 impl Reddit {
+    /// reddit's public listing endpoint, which needs no account.
+    const API: &'static str = "https://www.reddit.com";
+
     /// build the adapter.
     pub fn new(http: Http) -> Self {
-        Self { http, subreddit: None, sort: "new".to_owned(), time: "all".to_owned() }
+        Self {
+            http,
+            subreddit: None,
+            sort: "new".to_owned(),
+            time: "all".to_owned(),
+            base: Self::API.to_owned(),
+        }
+    }
+
+    /// point the adapter somewhere else: a mirror, a proxy, or a test server.
+    #[must_use]
+    pub fn with_base(mut self, base: impl Into<String>) -> Self {
+        self.base = base.into();
+        self
+    }
+
+    /// the endpoint this adapter is pointed at.
+    #[must_use]
+    pub fn base(&self) -> &str {
+        &self.base
     }
 
     /// watch one subreddit.
@@ -459,12 +503,30 @@ pub fn parse_github_stars(body: &[u8]) -> Result<Vec<Bookmark>> {
 pub struct GithubStars {
     http: Http,
     token: Option<String>,
+    base: String,
 }
 
 impl GithubStars {
+    /// github's rest api, which needs a token for anything private.
+    const API: &str = "https://api.github.com";
+
     /// build the adapter.
     pub fn new(http: Http, token: Option<String>) -> Self {
-        Self { http, token }
+        Self { http, token, base: Self::API.to_owned() }
+    }
+
+    /// point the adapter somewhere else: an enterprise instance, a proxy, or a
+    /// test server.
+    #[must_use]
+    pub fn with_base(mut self, base: impl Into<String>) -> Self {
+        self.base = base.into();
+        self
+    }
+
+    /// the endpoint this adapter is pointed at.
+    #[must_use]
+    pub fn base(&self) -> &str {
+        &self.base
     }
 }
 
@@ -490,7 +552,8 @@ impl Source for GithubStars {
 
         for page in 1..=page {
             let mut req = Request::get(format!(
-                "https://api.github.com/user/starred?per_page={limit}&page={page}"
+                "{}/user/starred?per_page={limit}&page={page}",
+                self.base
             ))
             .header("accept", "application/vnd.github+json");
             if let Some(token) = &self.token {
