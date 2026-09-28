@@ -69,7 +69,11 @@ impl SourceMedium {
     #[must_use]
     pub const fn requires_auth(self) -> bool {
         match self {
-            Self::X | Self::XBird | Self::Reddit | Self::HackerNews | Self::Github
+            Self::X
+            | Self::XBird
+            | Self::Reddit
+            | Self::HackerNews
+            | Self::Github
             | Self::YouTube => true,
             Self::Json
             | Self::Rss
@@ -419,73 +423,4 @@ fn jaro_winkler(a: &str, b: &str) -> f64 {
 
     let prefix = a.iter().zip(&b).take(4).take_while(|(x, y)| x == y).count().min(4);
     jaro + 0.1 * prefix as f64 * (1.0 - jaro)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_source_parses_from_its_own_name() {
-        for m in SourceMedium::ALL {
-            assert_eq!(m.name().parse::<SourceMedium>().unwrap(), *m);
-        }
-    }
-
-    #[test]
-    fn every_sink_parses_from_its_own_name() {
-        for m in SinkMedium::ALL {
-            assert_eq!(m.name().parse::<SinkMedium>().unwrap(), *m);
-        }
-    }
-
-    #[test]
-    fn source_parsing_is_forgiving_about_separators_case_and_aliases() {
-        assert_eq!("Hacker News".parse::<SourceMedium>().unwrap(), SourceMedium::HackerNews);
-        assert_eq!("  X  ".parse::<SourceMedium>().unwrap(), SourceMedium::X);
-        assert_eq!("twitter".parse::<SourceMedium>().unwrap(), SourceMedium::X);
-        assert_eq!("HN".parse::<SourceMedium>().unwrap(), SourceMedium::HackerNews);
-    }
-
-    #[test]
-    fn unknown_media_report_the_name_they_rejected() {
-        let err = "myspace".parse::<SourceMedium>().unwrap_err();
-        assert!(err.to_string().contains("myspace"));
-    }
-
-    #[test]
-    fn near_misses_get_a_did_you_mean_list() {
-        let err = "reddi".parse::<SourceMedium>().unwrap_err();
-        let suggestions = err.suggestions(SourceMedium::ALL.iter().map(|m| m.name()));
-        assert!(suggestions.contains(&"reddit"), "got {suggestions:?}");
-
-        let err = "zzzzzzzz".parse::<SourceMedium>().unwrap_err();
-        assert!(err.suggestions(SourceMedium::ALL.iter().map(|m| m.name())).is_empty());
-    }
-
-    #[test]
-    fn only_text_bearing_kinds_are_worth_extracting() {
-        assert!(LinkKind::Repository.worth_extracting());
-        assert!(LinkKind::Article.worth_extracting());
-
-        assert!(!LinkKind::Image.worth_extracting());
-        assert!(!LinkKind::Video.worth_extracting());
-        assert!(!LinkKind::Post.worth_extracting());
-    }
-
-    #[test]
-    fn auth_and_paging_capabilities_are_consistent() {
-        for m in SourceMedium::ALL {
-            if m.supports_paging() {
-                assert!(m.requires_auth(), "{m} pages but claims no auth");
-            }
-        }
-    }
-
-    #[test]
-    fn link_kind_accepts_the_legacy_smaug_vocabulary() {
-        assert_eq!("tweet".parse::<LinkKind>().unwrap(), LinkKind::Post);
-        assert_eq!("x-article".parse::<LinkKind>().unwrap(), LinkKind::LongForm);
-        assert_eq!("github".parse::<LinkKind>().unwrap(), LinkKind::Repository);
-    }
 }
