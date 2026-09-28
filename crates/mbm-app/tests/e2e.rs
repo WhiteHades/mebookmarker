@@ -2131,6 +2131,49 @@ fn render(archive: &Archive, width: u16, height: u16, theme: Theme) -> String {
 }
 
 #[test]
+fn a_click_selects_the_row_under_the_pointer_and_opens_it() {
+    // a terminal on a desk has a pointer under it, and a list that ignores a
+    // click reads as broken. the pointer is a second way in: everything it can
+    // do a key can do, and the frame is driven through a real pty so the mouse
+    // reporting is the terminal's and not a stubbed event.
+    if !tmux() {
+        eprintln!("skipping: tmux is not installed");
+        return;
+    }
+
+    let mock = Mock::start();
+    mock.route("/search_by_date", HACKER_NEWS);
+    let archive = Archive::new("tui-mouse");
+    archive.config(&format!(
+        "data_dir = \"{{data}}\"\n\n[[sources]]\nmedium = \"hacker-news\"\nenabled = true\n\n\
+         [sources.options]\nbase = \"{}\"\n",
+        mock.base()
+    ));
+    archive.ok(&["run", "-n", "5"]);
+
+    let session = Session { name: start_session(&archive, 100, 24) };
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+
+    // the list's first row is the second line of the frame, and a click on the
+    // *third* row has to select the third item rather than the second
+    let before = capture(&session.name);
+    assert!(before.contains("Boonful"), "the list is empty:\n{before}");
+    click(&session.name, 3, 10);
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    let after = capture(&session.name);
+    // the third item opened, and the detail view is showing it
+    assert!(after.contains("havu12"), "the click did not open the row under it:\n{after}");
+
+    send(&session.name, "Escape");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    // the wheel moves three rows, and the count and the bar follow
+    scroll(&session.name, 1);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let scrolled = capture(&session.name);
+    assert!(scrolled.contains("3 bookmarks"), "the wheel lost the list:\n{scrolled}");
+}
+
+#[test]
 fn the_terminal_interface_reports_contrast_it_measured() {
     // the palette is not a matter of taste and the check is not a comment: the
     // binary draws a frame, the pairs the frame uses are read back out of the
@@ -2230,6 +2273,34 @@ fn capture(session: &str) -> String {
         .output()
         .expect("tmux captures");
     String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// click at a cell in the session.
+fn click(session: &str, row: u16, column: u16) {
+    // tmux has no "send a click" verb, so the mouse is driven through the
+    // terminal's own reporting: a real terminal emulator receiving SGR mouse
+    // escapes, which is exactly what this sends
+    let _ = Command::new("tmux")
+        .args(["-L", &socket(), "send-keys", "-t", session])
+        .arg(format!("\u{1b}[<0;{};{}M", column + 1, row + 1))
+        .status();
+    // and the matching release, so the terminal sees a press and a lift
+    let _ = Command::new("tmux")
+        .args(["-L", &socket(), "send-keys", "-t", session])
+        .arg(format!("\u{1b}[<0;{};{}m", column + 1, row + 1))
+        .status();
+}
+
+/// scroll the wheel in the session, `count` notches down.
+fn scroll(session: &str, count: u16) {
+    for notch in 0..count {
+        // button 65 is the wheel down, 64 the wheel up, in the SGR encoding
+        let button = 64 + notch;
+        let _ = Command::new("tmux")
+            .args(["-L", &socket(), "send-keys", "-t", session])
+            .arg(format!("\u{1b}[<{button};20;10M"))
+            .status();
+    }
 }
 
 /// send keys to the session.
