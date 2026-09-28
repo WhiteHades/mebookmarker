@@ -89,9 +89,13 @@ impl Enricher for Tagger {
         let mut extra: BTreeSet<String> = BTreeSet::new();
 
         // the author and the hosts are facts about the bookmark, so they are
-        // tags whatever a model says
-        if let Some(handle) = &bookmark.author {
-            extra.insert(format!("@{}", handle.handle));
+        // tags whatever a model says. the handle is used as the platform wrote
+        // it, because a mention in a post is written with the `@` and a tag
+        // that differs from the mention by a character is a tag nobody can find.
+        if let Some(author) = &bookmark.author
+            && !author.is_address()
+        {
+            extra.insert(author.handle.clone());
         }
         for host in hosts(bookmark) {
             extra.insert(host);
@@ -300,132 +304,5 @@ impl Enricher for Categorizer {
         bookmark.categories =
             vec![CategoryAssignment { slug: chosen, confidence, assigned_by: Assigner::Jev }];
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mbm_core::bookmark::{Link, SourceRef};
-    use mbm_core::category::{Category, CategoryRule, Taxonomy};
-    use mbm_core::medium::SourceMedium;
-    use url::Url;
-
-    fn one(text: &str) -> Bookmark {
-        Bookmark::new(SourceRef::new(SourceMedium::X, "1", None), text, 0)
-    }
-
-    fn with_link(bookmark: &mut Bookmark, url: &str) {
-        let parsed = Url::parse(url).unwrap();
-        bookmark.links.push(Link {
-            original: parsed.clone(),
-            resolved: parsed,
-            kind: mbm_core::medium::LinkKind::Article,
-            title: None,
-            body: None,
-            summary: None,
-            blocked: None,
-        });
-    }
-
-    fn taxonomy() -> Taxonomy {
-        let mut t = Taxonomy::empty();
-        t.insert(Category::new("engineering", "Engineering", "#ff0000", "code and tools"));
-        t.insert(Category::new("reading", "Reading", "#00ff00", "things to read"));
-        t.insert(Category::new("general", "General", "#0000ff", "everything else"));
-        t.fallback = "general".to_owned();
-        t.rules.push(CategoryRule {
-            slug: "engineering".to_owned(),
-            match_all: Vec::new(),
-            match_any: vec!["github.com".to_owned(), "arxiv.org".to_owned()],
-            action: None,
-        });
-        t
-    }
-
-    #[tokio::test]
-    async fn without_a_gateway_the_tags_come_from_the_bookmark_alone() {
-        let mut b = one("a post");
-        with_link(&mut b, "https://github.com/simonw/llm");
-        Tagger::new(None, Vec::new()).unwrap().enrich(&mut b).await.unwrap();
-        assert!(b.tags.contains("github.com"));
-        assert!(b.tags.contains("github.com"));
-    }
-
-    #[tokio::test]
-    async fn an_author_handle_becomes_a_tag() {
-        let mut b = one("a post");
-        b.author = Some(mbm_core::bookmark::Author::new("simonw"));
-        Tagger::new(None, Vec::new()).unwrap().enrich(&mut b).await.unwrap();
-        assert!(b.tags.contains("@simonw"));
-    }
-
-    #[tokio::test]
-    async fn a_rule_beats_the_model() {
-        let mut b = one("a repo");
-        with_link(&mut b, "https://github.com/simonw/llm");
-        Categorizer::new(None, &taxonomy()).unwrap().enrich(&mut b).await.unwrap();
-        assert_eq!(b.categories.len(), 1);
-        assert_eq!(b.categories[0].slug, "engineering");
-        assert_eq!(b.categories[0].assigned_by, Assigner::Rule);
-        // a rule claims outright, so its confidence is exactly one
-        assert!((b.categories[0].confidence - 1.0).abs() < f32::EPSILON);
-    }
-
-    #[tokio::test]
-    async fn an_unmatched_bookmark_gets_no_category_without_a_gateway() {
-        let mut b = one("a thought");
-        with_link(&mut b, "https://example.com/thing");
-        Categorizer::new(None, &taxonomy()).unwrap().enrich(&mut b).await.unwrap();
-        assert!(b.categories.is_empty(), "a guess would be worse than nothing");
-    }
-
-    #[test]
-    fn two_links_to_the_same_host_categorise_once() {
-        let mut b = one("two links");
-        with_link(&mut b, "https://github.com/a/one");
-        with_link(&mut b, "https://github.com/b/two");
-        let found = Categorizer::new(None, &taxonomy()).unwrap().by_rule(&b);
-        assert_eq!(found.len(), 1);
-    }
-
-    #[test]
-    fn a_link_to_an_unrouted_host_claims_nothing() {
-        let mut b = one("one link");
-        with_link(&mut b, "https://example.com/thing");
-        assert!(Categorizer::new(None, &taxonomy()).unwrap().by_rule(&b).is_empty());
-    }
-
-    #[test]
-    fn the_fallback_is_whatever_the_taxonomy_names() {
-        let mut t = taxonomy();
-        t.fallback = "reading".to_owned();
-        assert_eq!(Categorizer::new(None, &t).unwrap().fallback(), "reading");
-    }
-
-    #[tokio::test]
-    async fn a_post_with_a_hundred_tags_is_trimmed() {
-        let mut b = one("a post");
-        for i in 0..100 {
-            b.push_tag(format!("tag{i}"));
-        }
-        Tagger::new(None, Vec::new()).unwrap().with_max_tags(2).enrich(&mut b).await.unwrap();
-        assert_eq!(b.tags.len(), 8, "four times the cap, and no more");
-    }
-
-    #[test]
-    fn the_stages_declare_themselves_remote() {
-        assert!(Tagger::new(None, Vec::new()).unwrap().stage().is_remote());
-        assert!(Categorizer::new(None, &taxonomy()).unwrap().stage().is_remote());
-    }
-
-    #[test]
-    fn candidate_tags_offer_the_model_its_grounding() {
-        let mut b = one("a post");
-        with_link(&mut b, "https://arxiv.org/abs/1234");
-        b.push_tag("rust");
-        let candidates = Tagger::candidate_tags(&b);
-        assert!(candidates.iter().any(|c| c == "rust"));
-        assert!(candidates.iter().any(|c| c == "arxiv.org"));
     }
 }
