@@ -1119,6 +1119,17 @@ fn the_entity_stage_finds_the_links_mentions_and_hashtags_in_a_post() {
 
     let links = row["links"].as_array().expect("links were found");
     assert_eq!(links.len(), 2, "{links:?}");
+
+    // and the item's own address is tagged too, so a person who saved a thread
+    // can find everything from that site without waiting for the tag stage
+    archive.ok(&["add", "https://x.com/trq212/status/1"]);
+    archive.ok(&["enrich", "-s", "entities"]);
+    let row = archive
+        .rows()
+        .into_iter()
+        .find(|r| r["url"] == "https://x.com/trq212/status/1")
+        .expect("the item");
+    assert!(tags_of(&row).contains(&"x.com".to_owned()), "the url's own host: {row:?}");
 }
 
 #[test]
