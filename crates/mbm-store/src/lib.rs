@@ -7,7 +7,6 @@ pub mod repo;
 pub mod schema;
 pub mod search;
 
-
 pub use repo::{Filter, Repo};
 pub use schema::{SCHEMA_VERSION, is_current, open, open_memory, reindex};
-pub use search::{Hit, Mode, Searcher};
+pub use search::{Hit, Mode, Searcher, build_prefilter, indexed_text};

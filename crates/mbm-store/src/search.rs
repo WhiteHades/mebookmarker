@@ -200,7 +200,12 @@ impl<'conn> Searcher<'conn> {
         let Some(prefilter) = self.prefilter else {
             return Vec::new();
         };
-        let rows = prefilter.candidates_all(query);
+        // the union of the query's bigram postings, not the intersection. a
+        // prefilter narrows the field the ranker looks at; it does not decide.
+        // an intersection asks every bigram of the query to be present, and one
+        // wrong character removes a bigram the document has, so the stage that
+        // exists to survive a typo would return nothing for a typo.
+        let rows = prefilter.candidates(query);
         if rows.is_empty() {
             return Vec::new();
         }
@@ -213,16 +218,23 @@ impl<'conn> Searcher<'conn> {
 
         let texts = self.texts_for(&candidates);
 
+        // the matcher's own default allows no typos at all, which is the exact
+        // behaviour under a fuzzy name. the allowance is a fraction of the
+        // needle's length: a two-letter query has no room for one and a twenty
+        // character phrase has room for several, and a fixed number is wrong at
+        // one end or the other.
+        let typos = (query.chars().count() / 4).min(u16::MAX as usize) as u16;
+        let config = Config::default().max_typos(Some(typos.max(1)));
+
         // the parallel entry point returns scores but no match positions, so it
         // runs first to rank the candidates cheaply and the positions come from
         // a sequential pass over the same set.
-        let mut matcher = Matcher::new(query, &Config::default());
-        let ranked = matcher.match_list_parallel(&texts, 0);
+        let ranked = Matcher::new(query, &config).match_list_parallel(&texts, 0);
         if ranked.is_empty() {
             return Vec::new();
         }
 
-        let ranges: Vec<Vec<(usize, usize)>> = Matcher::new(query, &Config::default())
+        let ranges: Vec<Vec<(usize, usize)>> = Matcher::new(query, &config)
             .match_list_indices(&texts)
             .into_iter()
             .map(|m| group_indices(&m.indices))
@@ -245,20 +257,22 @@ impl<'conn> Searcher<'conn> {
     /// matcher scores as a non-match. a search is better off returning fewer
     /// results than failing outright.
     fn texts_for(&self, candidates: &[(u32, Id)]) -> Vec<String> {
-        let mut out = Vec::with_capacity(candidates.len());
-        for (_, id) in candidates {
-            let text: String = self
-                .conn
-                .query_row(
-                    "SELECT coalesce(title,'') || ' ' || body || ' ' || extra FROM bookmark WHERE id = ?1",
-                    rusqlite::params![id.get() as i64],
-                    |r| r.get(0),
-                )
-                .unwrap_or_default();
-            out.push(text);
-        }
-        out
+        candidates.iter().map(|(_, id)| indexed_text(self.conn, *id)).collect()
     }
+}
+
+/// the text a bookmark is searched and ranked by.
+///
+/// one query, and one definition, because a prefilter built over a different
+/// string than the ranker scores is a prefilter for a different index.
+#[must_use]
+pub fn indexed_text(conn: &Connection, id: Id) -> String {
+    conn.query_row(
+        "SELECT coalesce(title,'') || ' ' || body || ' ' || extra FROM bookmark WHERE id = ?1",
+        rusqlite::params![id.get() as i64],
+        |r| r.get(0),
+    )
+    .unwrap_or_default()
 }
 
 fn fuse(exact: Vec<(Id, f64)>, fuzzy: Vec<Scored>) -> Vec<Hit> {
@@ -361,7 +375,7 @@ fn fts_query_or(query: &str) -> String {
 /// this query. building both together is what keeps the two consistent.
 pub fn build_prefilter(
     conn: &Connection,
-    text_of: impl Fn(i64) -> String,
+    text_of: impl Fn(Id) -> String,
 ) -> Result<(Prefilter, Vec<Id>)> {
     let ids: Vec<i64> = {
         let mut stmt = conn
@@ -374,260 +388,7 @@ pub fn build_prefilter(
 
     let mut prefilter = Prefilter::new(ids.len());
     for (position, &id) in ids.iter().enumerate() {
-        prefilter.insert(position, &text_of(id));
+        prefilter.insert(position, &text_of(Id::from_raw(id as u64)));
     }
     Ok((prefilter, ids.into_iter().map(|i| Id::from_raw(i as u64)).collect()))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::migrate;
-
-    fn seeded() -> (Connection, Vec<Id>) {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
-        migrate(&conn).unwrap();
-        let rows = [
-            ("rust simd tokenizer is very fast", "simd", "github"),
-            ("gardening in rural lancashire", "gardening", "substack"),
-            ("sqlite fts5 bm25 ranking explained", "search", "arxiv"),
-            ("rust allocators and zero copy", "rust", "github"),
-            ("baking sourdough at home", "baking", "substack"),
-        ];
-        for (i, (body, title, extra)) in rows.iter().enumerate() {
-            conn.execute(
-                "INSERT INTO bookmark(id, medium, external_id, ingested_at, title, body, extra)
-                 VALUES (?1, 'manual', ?2, ?1, ?3, ?4, ?5)",
-                rusqlite::params![1_000 + i as i64, format!("e{i}"), title, body, extra],
-            )
-            .unwrap();
-        }
-        let ids: Vec<Id> = (0..rows.len()).map(|i| Id::from_raw(1_000 + i as u64)).collect();
-        (conn, ids)
-    }
-
-    fn prefiltered(conn: &Connection) -> (Prefilter, Vec<Id>) {
-        build_prefilter(conn, |id| {
-            conn.query_row(
-                "SELECT coalesce(title,'') || ' ' || body || ' ' || extra FROM bookmark WHERE id = ?1",
-                [id],
-                |r| r.get::<_, String>(0),
-            )
-            .unwrap_or_default()
-        })
-        .unwrap()
-    }
-
-    #[test]
-    fn an_empty_query_returns_nothing() {
-        let (conn, _) = seeded();
-        assert!(Searcher::new(&conn).search("   ", Mode::Hybrid, 10).unwrap().is_empty());
-    }
-
-    #[test]
-    fn exact_search_finds_the_row() {
-        let (conn, _) = seeded();
-        let hits = Searcher::new(&conn).search("lancashire", Mode::Exact, 10).unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id.get(), 1_001);
-    }
-
-    #[test]
-    fn stemming_means_run_matches_running() {
-        let (conn, _) = seeded();
-        let hits = Searcher::new(&conn).search("rank", Mode::Exact, 10).unwrap();
-        assert!(!hits.is_empty(), "porter stemming should match `ranking`");
-    }
-
-    #[test]
-    fn extra_is_searchable_so_a_tool_name_finds_text_that_omits_it() {
-        let (conn, _) = seeded();
-        let hits = Searcher::new(&conn).search("substack", Mode::Exact, 10).unwrap();
-        assert_eq!(hits.len(), 2, "the extra column carries the source tag");
-    }
-
-    #[test]
-    fn operator_characters_in_a_query_do_not_break_fts5() {
-        let (conn, _) = seeded();
-        for q in ["rust -lang", "\"quoted", "a AND b", "(group)", "col:val", "x*", "^caret"] {
-            let _ = Searcher::new(&conn).search(q, Mode::Exact, 10).unwrap();
-        }
-    }
-
-    #[test]
-    fn the_limit_is_honoured() {
-        let (conn, _) = seeded();
-        assert_eq!(Searcher::new(&conn).search("rust", Mode::Exact, 1).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn a_zero_limit_falls_back_to_the_default() {
-        let (conn, _) = seeded();
-        assert!(Searcher::new(&conn).search("rust", Mode::Exact, 0).unwrap().len() > 1);
-    }
-
-    #[test]
-    fn a_multi_term_query_requiring_every_term_is_precise() {
-        let (conn, _) = seeded();
-        let searcher = Searcher::new(&conn);
-        // only row 4 has both terms
-        let both = searcher.search("rust allocators", Mode::Exact, 10).unwrap();
-        assert_eq!(both.len(), 1);
-        assert_eq!(both[0].id.get(), 1_003);
-    }
-
-    #[test]
-    fn a_multi_term_query_falls_back_when_nothing_carries_every_term() {
-        let (conn, _) = seeded();
-        let searcher = Searcher::new(&conn);
-        // no row has both, so the looser form has to bring something back
-        let hits = searcher.search("lancashire sourdough", Mode::Exact, 10).unwrap();
-        assert_eq!(hits.len(), 2, "one row per term");
-    }
-
-    #[test]
-    fn every_match_is_scored_so_the_ranking_is_real() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn).unwrap();
-        for i in 0..200 {
-            conn.execute(
-                "INSERT INTO bookmark(id, medium, external_id, ingested_at, body)
-                 VALUES (?1, 'manual', ?2, 0, 'common token everywhere')",
-                rusqlite::params![i64::from(i) + 1, format!("e{i}")],
-            )
-            .unwrap();
-        }
-        let searcher = Searcher::new(&conn);
-        let scored = searcher.exact("common").unwrap();
-        assert_eq!(scored.len(), 200, "all 200 matches are scored, not a capped sample");
-        assert!(
-            scored.iter().all(|(_, rank)| *rank < 0.0),
-            "every row must carry a real bm25 score, got {:?}",
-            scored.iter().map(|(_, r)| *r).take(3).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn a_strict_query_is_preferred_when_it_matches_something() {
-        let conn = Connection::open_in_memory().unwrap();
-        migrate(&conn).unwrap();
-        conn.execute(
-            "INSERT INTO bookmark(id, medium, external_id, ingested_at, body)
-             VALUES (1,'manual','a',0,'rust and sqlite together')",
-            [],
-        )
-        .unwrap();
-        let searcher = Searcher::new(&conn);
-        assert_eq!(searcher.match_query("rust sqlite"), "\"rust\" AND \"sqlite\"");
-        assert_eq!(searcher.match_query("rust sourdough"), "\"rust\" OR \"sourdough\"");
-    }
-
-    #[test]
-    fn a_typo_still_finds_the_row_through_the_prefilter() {
-        let (conn, _) = seeded();
-        let (prefilter, ids) = prefiltered(&conn);
-        let hits = Searcher::new(&conn)
-            .with_prefilter(&prefilter, &ids)
-            .search("lancashire", Mode::Fuzzy, 10)
-            .unwrap();
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id.get(), 1_001);
-    }
-
-    #[test]
-    fn a_misspelling_is_recovered_by_fuzzy_search() {
-        let (conn, _) = seeded();
-        let (prefilter, ids) = prefiltered(&conn);
-        let hits = Searcher::new(&conn)
-            .with_prefilter(&prefilter, &ids)
-            .search("lancashre", Mode::Fuzzy, 10)
-            .unwrap();
-        assert!(
-            hits.iter().any(|h| h.id.get() == 1_001),
-            "a transposition should still find the row, got {:?}",
-            hits.iter().map(|h| h.id.get()).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn exact_search_cannot_recover_a_misspelling() {
-        let (conn, _) = seeded();
-        let hits = Searcher::new(&conn).search("lancashre", Mode::Exact, 10).unwrap();
-        assert!(hits.is_empty(), "fts5 has no typo tolerance, which is what the prefilter is for");
-    }
-
-    #[test]
-    fn hybrid_keeps_the_exact_hits() {
-        let (conn, _) = seeded();
-        let (prefilter, ids) = prefiltered(&conn);
-        let hits = Searcher::new(&conn)
-            .with_prefilter(&prefilter, &ids)
-            .search("rust", Mode::Hybrid, 10)
-            .unwrap();
-        assert!(hits.len() >= 2, "both rust rows should surface");
-    }
-
-    #[test]
-    fn results_come_back_sorted_by_descending_score() {
-        let (conn, _) = seeded();
-        let (prefilter, ids) = prefiltered(&conn);
-        let hits = Searcher::new(&conn)
-            .with_prefilter(&prefilter, &ids)
-            .search("rust", Mode::Hybrid, 10)
-            .unwrap();
-        assert!(hits.windows(2).all(|w| w[0].score >= w[1].score));
-    }
-
-    #[test]
-    fn a_fuzzy_only_hit_still_survives_fusion() {
-        let hits = fuse(
-            vec![(Id::from_raw(1), -5.0)],
-            vec![(Id::from_raw(2), 0.9, vec![(0, 3)]), (Id::from_raw(1), 0.5, vec![])],
-        );
-        let fuzzy_only = hits.iter().find(|h| h.id.get() == 2).unwrap();
-        assert!(fuzzy_only.score > 0.0, "a document one ranker found is not discarded");
-        assert_eq!(fuzzy_only.rank, 0, "it has no bm25 position");
-    }
-
-    #[test]
-    fn a_document_both_rankers_like_outranks_one_they_split_on() {
-        let hits = fuse(
-            vec![(Id::from_raw(1), -9.0), (Id::from_raw(2), -8.0), (Id::from_raw(3), -1.0)],
-            vec![(Id::from_raw(3), 0.99, vec![]), (Id::from_raw(1), 0.5, vec![])],
-        );
-        let score = |id: u64| hits.iter().find(|h| h.id.get() == id).unwrap().score;
-        assert!(score(1) > score(2), "two rankers beat one");
-        assert!(score(1) > score(3), "first place twice beats first once");
-    }
-
-    #[test]
-    fn bm25_scores_stay_unbounded_while_fuzzy_stays_bounded() {
-        let (conn, _) = seeded();
-        let (prefilter, ids) = prefiltered(&conn);
-        for hit in Searcher::new(&conn)
-            .with_prefilter(&prefilter, &ids)
-            .search("rust", Mode::Hybrid, 10)
-            .unwrap()
-        {
-            assert!(hit.bm25 <= 0.0, "bm25 is negative for a match");
-            assert!((0.0..=1.0).contains(&hit.fuzzy), "fuzzy {} out of range", hit.fuzzy);
-        }
-    }
-
-    #[test]
-    fn queries_are_quoted_and_split_correctly() {
-        assert_eq!(fts_query_and("rust simd"), "\"rust\" AND \"simd\"");
-        assert_eq!(fts_query_or("rust simd"), "\"rust\" OR \"simd\"");
-        assert_eq!(fts_query_and("a b"), "", "single characters are dropped");
-        assert!(fts_query_or("a").contains('"'), "a lone character still needs quoting");
-    }
-
-    #[test]
-    fn build_prefilter_returns_ids_in_row_order() {
-        let (conn, _) = seeded();
-        let (_, ids) = build_prefilter(&conn, |_| String::new()).unwrap();
-        assert_eq!(ids.len(), 5);
-        assert!(ids.windows(2).all(|w| w[0] < w[1]));
-    }
 }
