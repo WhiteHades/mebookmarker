@@ -2035,6 +2035,54 @@ fn the_terminal_interface_narrows_without_losing_the_title() {
 }
 
 #[test]
+fn the_same_frame_renders_differently_in_each_appearance() {
+    // a palette that is the same in both appearances is a palette that is wrong
+    // in one of them. the check is that the rendered frame differs, that it
+    // differs by colour rather than by a character, and that the two layouts are
+    // identical, because an appearance is a palette and not an arrangement.
+    let mock = Mock::start();
+    mock.route("/search_by_date", HACKER_NEWS);
+    let archive = Archive::new("appearance");
+    archive.config(&format!(
+        "data_dir = \"{{data}}\"\n\n[[sources]]\nmedium = \"hacker-news\"\nenabled = true\n\n\
+         [sources.options]\nbase = \"{}\"\n",
+        mock.base()
+    ));
+    archive.ok(&["run", "-n", "5"]);
+
+    let frame = |appearance: &str| -> (String, String) {
+        let out = Command::new("cargo")
+            .args(["run", "-q", "-p", "mbm-app", "--example", "frame", "--"])
+            .arg(archive.data.to_string_lossy().into_owned())
+            .args(["100x20", &format!("/tmp/mbm-frame-{appearance}"), appearance, "browse"])
+            .output()
+            .expect("cargo runs");
+        assert!(out.status.success(), "the {appearance} frame did not render");
+        let text = std::fs::read_to_string(format!("/tmp/mbm-frame-{appearance}/frame.txt"))
+            .expect("the frame was written");
+        let html = std::fs::read_to_string(format!("/tmp/mbm-frame-{appearance}/frame.html"))
+            .expect("the frame was written");
+        (text, html)
+    };
+
+    let (light_text, light_html) = frame("light");
+    let (dark_text, dark_html) = frame("dark");
+
+    assert!(light_text.contains("Boonful"), "the light frame has no items:\n{light_text}");
+    assert!(dark_text.contains("Boonful"), "the dark frame has no items:\n{dark_text}");
+    // the same rows in the same places: an appearance is a palette, not an
+    // arrangement
+    assert_eq!(
+        light_text.lines().map(str::trim).collect::<Vec<_>>(),
+        dark_text.lines().map(str::trim).collect::<Vec<_>>(),
+        "the two appearances laid the frame out differently"
+    );
+    assert_ne!(light_html, dark_html, "the two appearances drew the same colours");
+    assert!(light_html.contains("#fcfdff"), "the light page is not the light page");
+    assert!(dark_html.contains("#0d1117"), "the dark page is not the dark page");
+}
+
+#[test]
 fn the_terminal_interface_reports_contrast_it_measured() {
     // the palette is not a matter of taste and the check is not a comment: the
     // binary draws a frame, the pairs the frame uses are read back out of the
