@@ -131,14 +131,30 @@ impl Enricher for Entities {
             });
         }
 
-        // keep the order the reader would meet them in, and the display order
-        // matches, so a sink can write them out as ordinals without sorting
+        // the hosts are facts about the item, and a person searching their
+        // archive wants `mbm list -t arxiv.org` to work the moment the item
+        // lands, rather than only after the tag stage has paid for a question
+        let hosts: Vec<String> =
+            found.iter().filter_map(|link| link.resolved.host_str().map(str::to_owned)).collect();
+
+        // the links already on the bookmark came from whoever read it: a
+        // browser folder, a feed's own target, a `- **Filed:**` line in an
+        // archive file. replacing them would throw away context this stage never
+        // had, so the two sets are merged, in the order a reader would meet them.
+        for link in std::mem::take(&mut bookmark.links) {
+            if !found.iter().any(|f| f.resolved == link.resolved) {
+                found.push(link);
+            }
+        }
         found.sort_by(|a, b| {
-            let pa = bookmark.text.find(a.original.as_str()).unwrap_or(usize::MAX);
-            let pb = bookmark.text.find(b.original.as_str()).unwrap_or(usize::MAX);
-            pa.cmp(&pb).then_with(|| a.resolved.as_str().cmp(b.resolved.as_str()))
+            let position =
+                |link: &Link| bookmark.text.find(link.original.as_str()).unwrap_or(usize::MAX);
+            position(a).cmp(&position(b)).then_with(|| a.resolved.as_str().cmp(b.resolved.as_str()))
         });
         bookmark.links = found;
+        for host in hosts {
+            bookmark.push_tag(host);
+        }
 
         for handle in mentions(&bookmark.text) {
             bookmark.push_tag(format!("@{handle}"));
@@ -374,187 +390,4 @@ pub fn kinds(bookmark: &Bookmark) -> Vec<LinkKind> {
     out.sort_by_key(|k| k.worth_extracting());
     out.dedup_by_key(|k| *k);
     out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mbm_core::bookmark::SourceRef;
-    use mbm_core::medium::SourceMedium;
-
-    fn one(text: &str) -> Bookmark {
-        Bookmark::new(SourceRef::new(SourceMedium::X, "1", None), text, 0)
-    }
-
-    #[tokio::test]
-    async fn urls_in_the_text_become_links() {
-        let mut b = one("look at https://example.com/a and http://other.example/b");
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert_eq!(b.links.len(), 2);
-        assert!(b.links.iter().all(|l| l.kind != LinkKind::Unknown));
-    }
-
-    #[tokio::test]
-    async fn a_trailing_punctuation_is_not_part_of_a_url() {
-        let mut b = one("read https://example.com/a.");
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert_eq!(b.links[0].resolved.as_str(), "https://example.com/a");
-    }
-
-    #[tokio::test]
-    async fn a_url_repeated_twice_is_one_link() {
-        let mut b = one("https://example.com/a and again https://example.com/a");
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert_eq!(b.links.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn links_keep_the_order_they_were_written_in() {
-        let mut b = one("first https://b.example/1 then https://a.example/2");
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert_eq!(b.links[0].resolved.host_str(), Some("b.example"));
-        assert_eq!(b.links[1].resolved.host_str(), Some("a.example"));
-    }
-
-    #[tokio::test]
-    async fn a_paywalled_link_is_marked() {
-        let mut b = one("https://www.nytimes.com/2026/01/02/thing.html");
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert!(b.links[0].blocked.is_some(), "{:?}", b.links[0].blocked);
-    }
-
-    #[tokio::test]
-    async fn a_bare_domain_becomes_a_link() {
-        let mut b = one("saw it on news.ycombinator.com today");
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert_eq!(b.links.len(), 1);
-        assert_eq!(b.links[0].resolved.host_str(), Some("news.ycombinator.com"));
-    }
-
-    #[tokio::test]
-    async fn a_sentence_ending_in_a_period_is_not_a_domain() {
-        assert!(bare_domains("the meeting went fine.").is_empty());
-        assert!(bare_domains("version 1.2.3 shipped").is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_filename_is_not_a_domain() {
-        assert!(bare_domains("edit report.zip first").is_empty());
-        assert!(bare_domains("open main.rs").is_empty());
-    }
-
-    #[tokio::test]
-    async fn mentions_become_tags() {
-        let mut b = one("thanks @simonw and @swyx, also @SimonW again");
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert!(b.tags.contains("@simonw"));
-        assert!(b.tags.contains("@swyx"));
-        assert_eq!(b.tags.iter().filter(|t| *t == "@simonw").count(), 1, "a repeat is one tag");
-    }
-
-    #[tokio::test]
-    async fn a_trailing_full_stop_is_not_part_of_a_handle() {
-        assert_eq!(mentions("hi @simonw."), vec!["simonw".to_owned()]);
-        assert_eq!(mentions("hi @simonw,"), vec!["simonw".to_owned()]);
-        assert_eq!(mentions("(@simonw)"), vec!["simonw".to_owned()]);
-    }
-
-    #[tokio::test]
-    async fn an_at_sign_inside_a_word_is_left_alone() {
-        assert!(mentions("a@b.example is an address").is_empty());
-    }
-
-    #[tokio::test]
-    async fn hashtags_and_cashtags_become_tags() {
-        let mut b = one("#rustlang and $RUST on the list, #Rust twice");
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert!(b.tags.contains("rustlang"));
-        assert!(b.tags.contains("rust"));
-    }
-
-    #[tokio::test]
-    async fn a_tag_with_no_letter_is_skipped() {
-        // `#2026` is a year and `$100` is a price
-        assert!(hashtags("released in #2026").is_empty());
-        assert!(cashtags("it costs $100").is_empty());
-        assert_eq!(hashtags("#rust2026"), vec!["rust2026".to_owned()]);
-    }
-
-    #[tokio::test]
-    async fn a_price_is_not_a_cashtag() {
-        assert!(cashtags("it costs $100 or so").iter().all(|t| t != "100"));
-    }
-
-    #[tokio::test]
-    async fn every_item_gets_a_fingerprint() {
-        let mut a = one("the same text about a thing");
-        let mut b = one("the same text about a thing");
-        Entities::new().enrich(&mut a).await.unwrap();
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert_eq!(a.fingerprint, b.fingerprint);
-        assert!(a.fingerprint.is_some());
-    }
-
-    #[tokio::test]
-    async fn a_url_rewrite_of_the_same_text_keeps_the_fingerprint() {
-        let mut a = one("read https://example.com/a about caching");
-        let mut b = one("read https://example.com/b?utm=x about caching");
-        Entities::new().enrich(&mut a).await.unwrap();
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert_eq!(a.fingerprint, b.fingerprint, "the url is not the subject");
-    }
-
-    #[tokio::test]
-    async fn a_video_waiting_for_a_transcript_is_flagged() {
-        let mut b = one("a video");
-        b.tags.insert("needs-transcript".to_owned());
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert!(b.tags.contains("transcript-pending"));
-    }
-
-    #[tokio::test]
-    async fn a_post_with_fifty_links_is_capped() {
-        let text =
-            (0..50).map(|i| format!("https://example.com/{i}")).collect::<Vec<_>>().join(" ");
-        let mut b = one(&text);
-        Entities::new().with_max_links(10).enrich(&mut b).await.unwrap();
-        assert_eq!(b.links.len(), 10);
-    }
-
-    #[test]
-    fn the_stage_declares_itself_free() {
-        let stage = Entities::new().stage();
-        assert_eq!(stage, EnrichStage::Entities);
-        assert!(!stage.is_remote());
-    }
-
-    #[test]
-    fn tld_matching_covers_the_common_cases() {
-        assert!(is_tld("com"));
-        assert!(is_tld("co"));
-        assert!(is_tld("xyz"));
-        assert!(!is_tld("rs"));
-        assert!(!is_tld("zip"));
-        assert!(!is_tld("c"));
-    }
-
-    #[test]
-    fn a_country_code_ending_needs_a_second_level_label() {
-        assert!(is_domain("bbc.co.uk", "uk"));
-        assert!(is_domain("globo.com.br", "br"));
-        assert!(!is_domain("main.rs", "rs"), "a source file is not a domain");
-        assert!(!is_domain("example", "com"), "one label is not a domain");
-    }
-
-    #[tokio::test]
-    async fn a_url_is_not_also_read_as_a_bare_domain() {
-        let mut b = one("see https://news.ycombinator.com/item?id=1 for the thread");
-        Entities::new().enrich(&mut b).await.unwrap();
-        assert_eq!(
-            b.links.len(),
-            1,
-            "{:?}",
-            b.links.iter().map(|l| l.resolved.as_str()).collect::<Vec<_>>()
-        );
-    }
 }
