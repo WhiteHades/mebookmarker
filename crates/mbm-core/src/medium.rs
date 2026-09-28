@@ -22,10 +22,6 @@ pub enum SourceMedium {
 
     Rss,
 
-    ReadLater,
-
-    Readwise,
-
     BrowserBookmarks,
 
     LocalFile,
@@ -46,8 +42,6 @@ impl SourceMedium {
         Self::Github,
         Self::YouTube,
         Self::Rss,
-        Self::ReadLater,
-        Self::Readwise,
         Self::BrowserBookmarks,
         Self::LocalFile,
         Self::Manual,
@@ -65,8 +59,6 @@ impl SourceMedium {
             Self::Github => "github",
             Self::YouTube => "youtube",
             Self::Rss => "rss",
-            Self::ReadLater => "read-later",
-            Self::Readwise => "readwise",
             Self::BrowserBookmarks => "browser-bookmarks",
             Self::LocalFile => "local-file",
             Self::Manual => "manual",
@@ -77,14 +69,8 @@ impl SourceMedium {
     #[must_use]
     pub const fn requires_auth(self) -> bool {
         match self {
-            Self::X
-            | Self::XBird
-            | Self::Reddit
-            | Self::HackerNews
-            | Self::Github
-            | Self::YouTube
-            | Self::ReadLater
-            | Self::Readwise => true,
+            Self::X | Self::XBird | Self::Reddit | Self::HackerNews | Self::Github
+            | Self::YouTube => true,
             Self::Json
             | Self::Rss
             | Self::BrowserBookmarks
@@ -97,13 +83,7 @@ impl SourceMedium {
     #[must_use]
     pub const fn supports_paging(self) -> bool {
         match self {
-            Self::X
-            | Self::XBird
-            | Self::Reddit
-            | Self::HackerNews
-            | Self::Github
-            | Self::ReadLater
-            | Self::Readwise => true,
+            Self::X | Self::XBird | Self::Reddit | Self::HackerNews | Self::Github => true,
             Self::Json
             | Self::YouTube
             | Self::Rss
@@ -462,7 +442,6 @@ mod tests {
     #[test]
     fn source_parsing_is_forgiving_about_separators_case_and_aliases() {
         assert_eq!("Hacker News".parse::<SourceMedium>().unwrap(), SourceMedium::HackerNews);
-        assert_eq!("read_later".parse::<SourceMedium>().unwrap(), SourceMedium::ReadLater);
         assert_eq!("  X  ".parse::<SourceMedium>().unwrap(), SourceMedium::X);
         assert_eq!("twitter".parse::<SourceMedium>().unwrap(), SourceMedium::X);
         assert_eq!("HN".parse::<SourceMedium>().unwrap(), SourceMedium::HackerNews);
