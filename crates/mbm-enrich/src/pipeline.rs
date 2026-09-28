@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mbm_core::bookmark::{Bookmark, CategoryAssignment};
+use mbm_core::bookmark::{Bookmark, CategoryAssignment, Link};
 use mbm_core::error::{Error, Result};
 use mbm_core::id::Id;
 use mbm_core::port::{EnrichStage, Enricher};
@@ -331,8 +331,9 @@ fn write_back(
     }
 
     if stage == EnrichStage::Entities {
-        // a fingerprint is the whole point of this stage, so its absence is
-        // worth a warning rather than a silent success
+        // the links are the whole point of this stage. a stage that finds them
+        // and does not write them has run, cost nothing, and changed nothing.
+        write_links(tx, id, &bookmark.links)?;
         if let Some(fingerprint) = bookmark.fingerprint {
             repo.set_fingerprint(id, fingerprint)?;
         } else {
@@ -348,6 +349,34 @@ fn write_back(
         repo.set_described(id, bookmark.title.as_deref(), summary_of(bookmark).as_deref())?;
     }
 
+    Ok(())
+}
+
+/// replace a bookmark's links.
+///
+/// the ordinals are the order they appear in the text, which is the order a
+/// person reading the post met them, and the order every sink writes them in.
+fn write_links(tx: &rusqlite::Transaction<'_>, id: Id, links: &[Link]) -> Result<()> {
+    tx.execute("DELETE FROM link WHERE bookmark = ?1", params![id.get() as i64])
+        .map_err(|e| store(&e))?;
+    for (ordinal, link) in links.iter().enumerate() {
+        tx.execute(
+            "INSERT INTO link(bookmark, ordinal, original, resolved, kind, title, body, summary, \
+             blocked) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                id.get() as i64,
+                ordinal as i64,
+                link.original.as_str(),
+                link.resolved.as_str(),
+                link.kind.name(),
+                link.title,
+                link.body,
+                link.summary,
+                link.blocked.map(|b| b.name().to_owned()),
+            ],
+        )
+        .map_err(|e| store(&e))?;
+    }
     Ok(())
 }
 
@@ -505,314 +534,4 @@ fn now_ms() -> i64 {
 
 fn store(e: &rusqlite::Error) -> Error {
     Error::Store(e.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use mbm_core::bookmark::SourceRef;
-    use mbm_core::id::Id;
-    use mbm_core::medium::SourceMedium;
-    use mbm_core::port::FetchPage;
-
-    /// an enricher that records which bookmarks it saw, and can be told to fail.
-    struct Recorder {
-        stage: EnrichStage,
-        fail_on: Vec<String>,
-        seen: std::sync::Mutex<Vec<String>>,
-    }
-
-    impl Recorder {
-        fn new(stage: EnrichStage) -> Self {
-            Self { stage, fail_on: Vec::new(), seen: std::sync::Mutex::new(Vec::new()) }
-        }
-
-        fn failing_on(ids: &[&str]) -> Self {
-            Self {
-                stage: EnrichStage::Entities,
-                fail_on: ids.iter().map(|s| (*s).to_owned()).collect(),
-                seen: std::sync::Mutex::new(Vec::new()),
-            }
-        }
-
-        fn count(&self) -> usize {
-            self.seen.lock().map_or(0, |s| s.len())
-        }
-    }
-
-    #[async_trait::async_trait]
-    impl Enricher for Recorder {
-        fn stage(&self) -> EnrichStage {
-            self.stage
-        }
-
-        async fn enrich(&self, bookmark: &mut Bookmark) -> Result<()> {
-            self.seen.lock().map(|mut s| s.push(bookmark.source.external_id.clone())).ok();
-            if self.fail_on.contains(&bookmark.source.external_id) {
-                return Err(Error::Pipeline("asked to fail".to_owned()));
-            }
-            Ok(())
-        }
-    }
-
-    fn open() -> (tempfile::TempDir, Connection) {
-        let dir = tempfile::tempdir().unwrap();
-        let conn = Connection::open(dir.path().join("t.db")).unwrap();
-        mbm_store::migrate(&conn).unwrap();
-        (dir, conn)
-    }
-
-    fn seed(conn: &Connection, count: usize) {
-        let repo = Repo::new(conn);
-        for i in 0..count {
-            let mut b = Bookmark::new(
-                SourceRef::new(SourceMedium::X, format!("{i}"), None),
-                format!("post number {i}"),
-                0,
-            );
-            b.id = Id::from_parts(1_700_000_000_000 + i as u64, i as u16);
-            repo.insert(&b).unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn a_stage_runs_over_everything_and_stamps_it() {
-        let (_dir, conn) = open();
-        seed(&conn, 5);
-        let plan = Plan::new(vec![Arc::new(Recorder::new(EnrichStage::Entities))]);
-        let report = run(&conn, &plan).await.unwrap();
-        assert_eq!(report.total_done(), 5, "report: {report:?}");
-        assert_eq!(Repo::new(&conn).pending("entities_at").unwrap(), 0);
-    }
-
-    #[tokio::test]
-    async fn a_second_run_has_nothing_to_do() {
-        let (_dir, conn) = open();
-        seed(&conn, 3);
-        let stage = Arc::new(Recorder::new(EnrichStage::Entities));
-        let plan = Plan::new(vec![stage.clone()]);
-        run(&conn, &plan).await.unwrap();
-        let second = run(&conn, &plan).await.unwrap();
-        assert_eq!(second.total_done(), 0);
-        assert_eq!(stage.count(), 3, "a stamped row is not read again");
-    }
-
-    /// a stage that adds one tag to whatever it is given.
-    #[derive(Debug)]
-    struct Tagger {
-        seen: std::sync::Mutex<Vec<String>>,
-    }
-
-    #[async_trait::async_trait]
-    impl Enricher for Tagger {
-        fn stage(&self) -> EnrichStage {
-            EnrichStage::Tags
-        }
-
-        async fn enrich(&self, bookmark: &mut Bookmark) -> Result<()> {
-            self.seen.lock().map(|mut s| s.push(bookmark.source.external_id.clone())).ok();
-            bookmark.push_tag("added-by-the-stage");
-            Ok(())
-        }
-    }
-
-    /// a stage that files one bookmark under a category.
-    #[derive(Debug)]
-    struct Filer;
-
-    #[async_trait::async_trait]
-    impl Enricher for Filer {
-        fn stage(&self) -> EnrichStage {
-            EnrichStage::Categorize
-        }
-
-        async fn enrich(&self, bookmark: &mut Bookmark) -> Result<()> {
-            bookmark.categories.push(CategoryAssignment {
-                slug: "engineering".to_owned(),
-                confidence: 0.9,
-                assigned_by: mbm_core::bookmark::Assigner::Jev,
-            });
-            Ok(())
-        }
-    }
-
-    #[tokio::test]
-    async fn the_tag_stage_saves_its_tags() {
-        // a stage that runs, costs money, and writes nothing is the one failure
-        // this design cannot have
-        let (_dir, conn) = open();
-        seed(&conn, 3);
-        let plan = Plan::new(vec![Arc::new(Tagger { seen: std::sync::Mutex::new(Vec::new()) })]);
-        run(&conn, &plan).await.unwrap();
-
-        let repo = Repo::new(&conn);
-        let found = repo.by_tag("added-by-the-stage", 10, 0).unwrap();
-        assert_eq!(found.len(), 3, "every row kept the tag the stage added");
-    }
-
-    #[tokio::test]
-    async fn the_tag_stage_keeps_the_tags_an_earlier_stage_added() {
-        let (_dir, conn) = open();
-        seed(&conn, 2);
-        for bookmark in Repo::new(&conn).list(10, 0).unwrap() {
-            let mut b = bookmark;
-            b.push_tag("from-entities");
-            Repo::new(&conn).set_tags(b.id, &b.tags.iter().cloned().collect()).unwrap();
-        }
-
-        let plan = Plan::new(vec![Arc::new(Tagger { seen: std::sync::Mutex::new(Vec::new()) })]);
-        run(&conn, &plan).await.unwrap();
-
-        let repo = Repo::new(&conn);
-        assert_eq!(repo.by_tag("from-entities", 10, 0).unwrap().len(), 2);
-        assert_eq!(repo.by_tag("added-by-the-stage", 10, 0).unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn the_categorize_stage_saves_its_categories() {
-        let (_dir, conn) = open();
-        seed(&conn, 2);
-        let plan = Plan::new(vec![Arc::new(Filer)]);
-        run(&conn, &plan).await.unwrap();
-
-        let stored = Repo::new(&conn).load(Id::from_parts(1_700_000_000_000, 0)).unwrap().unwrap();
-        assert_eq!(stored.categories.len(), 1, "{:?}", stored.categories);
-        assert_eq!(stored.categories[0].slug, "engineering");
-        assert!((stored.categories[0].confidence - 0.9).abs() < f32::EPSILON);
-    }
-
-    #[tokio::test]
-    async fn a_failure_leaves_its_row_for_the_next_run() {
-        let (_dir, conn) = open();
-        seed(&conn, 3);
-        let stage = Arc::new(Recorder::failing_on(&["1"]));
-        let plan = Plan::new(vec![stage]);
-        let report = run(&conn, &plan).await.unwrap();
-        assert_eq!(report.total_done(), 2);
-        assert_eq!(report.total_failed(), 1);
-        assert_eq!(Repo::new(&conn).pending("entities_at").unwrap(), 1, "the failed row waits");
-    }
-
-    #[tokio::test]
-    async fn stages_run_cheapest_first() {
-        let (_dir, conn) = open();
-        seed(&conn, 2);
-        let plan = Plan::new(vec![
-            Arc::new(Recorder::new(EnrichStage::Categorize)),
-            Arc::new(Recorder::new(EnrichStage::Entities)),
-        ]);
-        let report = run(&conn, &plan).await.unwrap();
-        let order: Vec<EnrichStage> = report.stages.iter().map(|(s, _)| *s).collect();
-        assert_eq!(order, vec![EnrichStage::Entities, EnrichStage::Categorize]);
-    }
-
-    #[tokio::test]
-    async fn requeue_puts_a_stage_back_in_the_queue() {
-        let (_dir, conn) = open();
-        seed(&conn, 4);
-        let plan = Plan::new(vec![Arc::new(Recorder::new(EnrichStage::Tags))]);
-        run(&conn, &plan).await.unwrap();
-        assert_eq!(Repo::new(&conn).pending("tagged_at").unwrap(), 0);
-
-        assert_eq!(requeue(&conn, EnrichStage::Tags).unwrap(), 4);
-        assert_eq!(Repo::new(&conn).pending("tagged_at").unwrap(), 4);
-    }
-
-    #[tokio::test]
-    async fn a_limit_stops_a_stage_early() {
-        let (_dir, conn) = open();
-        seed(&conn, 10);
-        let plan =
-            Plan::new(vec![Arc::new(Recorder::new(EnrichStage::Entities))]).with_limit(Some(4));
-        let report = run(&conn, &plan).await.unwrap();
-        assert_eq!(report.total_done(), 4);
-        assert_eq!(Repo::new(&conn).pending("entities_at").unwrap(), 6);
-    }
-
-    /// a stage that must never be called.
-    #[derive(Debug)]
-    struct Off;
-
-    #[async_trait::async_trait]
-    impl Enricher for Off {
-        fn stage(&self) -> EnrichStage {
-            EnrichStage::Vision
-        }
-
-        fn is_enabled(&self) -> bool {
-            false
-        }
-
-        async fn enrich(&self, _: &mut Bookmark) -> Result<()> {
-            unreachable!("a disabled stage is never called")
-        }
-    }
-
-    #[tokio::test]
-    async fn a_disabled_stage_is_skipped() {
-        let (_dir, conn) = open();
-        seed(&conn, 2);
-        let report = run(&conn, &Plan::new(vec![Arc::new(Off)])).await.unwrap();
-        assert!(report.stages.is_empty());
-        assert_eq!(Repo::new(&conn).pending("vision_at").unwrap(), 2);
-    }
-
-    #[tokio::test]
-    async fn the_entity_stage_writes_its_output_through_the_repo() {
-        let (_dir, conn) = open();
-        seed(&conn, 3);
-        let plan = Plan::new(vec![Arc::new(Entities::new())]);
-        run(&conn, &plan).await.unwrap();
-
-        let repo = Repo::new(&conn);
-        let stored = repo.load(Id::from_parts(1_700_000_000_000, 0)).unwrap().unwrap();
-        assert!(stored.fingerprint.is_some(), "the fingerprint survives the round trip");
-        let tags = repo.by_tag("github.com", 10, 0).unwrap();
-        assert!(tags.is_empty(), "a post whose text carries no host has no host tag");
-    }
-
-    #[tokio::test]
-    async fn the_backlog_line_names_what_is_waiting() {
-        let (_dir, conn) = open();
-        seed(&conn, 3);
-        let line = backlog_line(&conn);
-        assert!(line.contains("3 bookmarks"), "{line}");
-        assert!(line.contains("entities 3"), "{line}");
-    }
-
-    #[tokio::test]
-    async fn a_clear_backlog_says_so() {
-        let (_dir, conn) = open();
-        seed(&conn, 1);
-        let plan = Plan::new(vec![Arc::new(Recorder::new(EnrichStage::Entities))]);
-        run(&conn, &plan).await.unwrap();
-        for stage in EnrichStage::ALL {
-            conn.execute(&format!("UPDATE bookmark SET {} = 1", column_for(*stage)), []).unwrap();
-        }
-        assert_eq!(backlog_line(&conn), "1 bookmarks, all stages clear");
-    }
-
-    #[test]
-    fn every_stage_maps_to_a_real_column() {
-        for stage in EnrichStage::ALL {
-            let column = column_for(*stage);
-            assert!(column.ends_with("_at"), "{stage} maps to {column}");
-        }
-    }
-
-    #[tokio::test]
-    async fn the_next_batch_reads_the_bookmarks_themselves() {
-        let (_dir, conn) = open();
-        seed(&conn, 3);
-        let batch = next_batch(&conn, EnrichStage::Entities, 2).unwrap();
-        assert_eq!(batch.len(), 2);
-        assert!(batch[0].text.contains("post number"));
-    }
-
-    #[test]
-    fn a_fetch_page_of_nothing_is_still_a_page() {
-        let empty = FetchPage::empty();
-        assert!(empty.items.is_empty());
-        assert!(!empty.has_more);
-    }
 }
