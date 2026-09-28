@@ -46,3 +46,7 @@ mbm-core.workspace = true
 mbm-enrich.workspace = true
 mbm-store.workspace = true
 mbm-sink.workspace = true
+
+[[example]]
+name = "frame"
+required-features = []
