@@ -116,6 +116,45 @@ pub enum Action {
     None,
 }
 
+/// what a pointer did.
+///
+/// a terminal with a mouse under it is the normal case on a desk, and a list
+/// that ignores a click on a row reads as broken rather than as keyboard-only.
+/// the pointer is a second way in and never the only one: everything it can do,
+/// a key can do, and the whole interface is reachable without it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pointer {
+    /// a click, at a cell.
+    Click { row: u16, column: u16 },
+    /// the wheel, up or down.
+    Scroll { up: bool },
+    /// the pointer moved somewhere the interface does not care.
+    Ignored,
+}
+
+/// the first row of the list, so a click can be turned into a selection.
+///
+/// the click arrives in terminal cells and the list is drawn inside a frame, so
+/// the two have to be reconciled in one place rather than at every call site.
+pub const LIST_TOP: u16 = 1;
+
+/// read a mouse event into a pointer action.
+///
+/// the row is measured from the top of the list, so a click on the first line
+/// selects the first item rather than the second.
+#[must_use]
+pub fn pointer_for(event: &crossterm::event::MouseEvent) -> Pointer {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    match event.kind {
+        MouseEventKind::ScrollUp => Pointer::Scroll { up: true },
+        MouseEventKind::ScrollDown => Pointer::Scroll { up: false },
+        MouseEventKind::Down(MouseButton::Left) => {
+            Pointer::Click { row: event.row.saturating_sub(LIST_TOP), column: event.column }
+        }
+        _ => Pointer::Ignored,
+    }
+}
+
 /// read one key event into an action.
 ///
 /// the raw key first, because `KeyCode::Char` with a control modifier is a
@@ -328,6 +367,17 @@ impl App {
         format!("search · {}", mode_label(self.mode))
     }
 
+    /// the first visible row of the showing list.
+    ///
+    /// this is the list the reader can see, and a click names an offset into it.
+    pub fn window_offset(&self) -> usize {
+        let shown = self.shown_len();
+        if shown <= self.rows {
+            return 0;
+        }
+        self.selected.saturating_sub(self.rows / 2).min(shown - self.rows)
+    }
+
     /// how many rows the showing list has.
     fn shown_len(&self) -> usize {
         if self.view == View::Tags { self.tags.len() } else { self.items.len() }
@@ -478,6 +528,36 @@ impl App {
             Action::None => {}
         }
         true
+    }
+
+    /// act on a pointer.
+    ///
+    /// the row a click landed on is an offset into the *visible* window, so the
+    /// window's own offset is added back. getting that wrong is how a click
+    /// selects a different row from the one under the pointer, which is the one
+    /// thing a click must never do.
+    pub fn point(&mut self, pointer: Pointer) {
+        match pointer {
+            Pointer::Scroll { up } => {
+                // a wheel notch moves three rows, which is what a physical wheel
+                // feels like and is far too slow at one
+                let step = 3usize;
+                self.selected = if up {
+                    self.selected.saturating_sub(step)
+                } else {
+                    (self.selected + step).min(self.shown_len().saturating_sub(1))
+                };
+            }
+            Pointer::Click { row, column } => {
+                let _ = column;
+                let offset = self.window_offset();
+                let target = offset + usize::from(row);
+                if target < self.shown_len() {
+                    self.selected = target;
+                }
+            }
+            Pointer::Ignored => {}
+        }
     }
 
     /// rebuild the list at most every 120 milliseconds.
@@ -645,6 +725,7 @@ fn backend<E: std::fmt::Display>(error: E) -> Error {
 /// background is and the answer is used; a terminal that will not answer falls
 /// back to dark, and `MBM_THEME` overrides both.
 pub fn run(conn: Arc<std::sync::Mutex<Connection>>, query: &str) -> Result<()> {
+    use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
     use crossterm::execute;
     use crossterm::terminal::{
         EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -654,6 +735,14 @@ pub fn run(conn: Arc<std::sync::Mutex<Connection>>, query: &str) -> Result<()> {
     let theme = resolve_theme();
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen).map_err(ui)?;
+    // mouse reporting is on, and it is on for the whole session rather than
+    // toggled: a terminal that has a pointer under it should be able to use it,
+    // and the keyboard is unaffected either way
+    if let Err(e) = execute!(stdout, EnableMouseCapture) {
+        // a terminal with no mouse support says so, and losing the pointer is
+        // not a reason to refuse to start
+        tracing::debug!(error = %e, "this terminal does not report the mouse");
+    }
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).map_err(ui)?;
     let size = terminal.size().map_err(ui)?;
@@ -663,6 +752,7 @@ pub fn run(conn: Arc<std::sync::Mutex<Connection>>, query: &str) -> Result<()> {
     let outcome = event_loop(&mut terminal, &mut app, &theme);
 
     disable_raw_mode().map_err(ui)?;
+    let _ = execute!(terminal.backend_mut(), DisableMouseCapture);
     execute!(terminal.backend_mut(), LeaveAlternateScreen).map_err(ui)?;
     terminal.show_cursor().map_err(ui)?;
     outcome
@@ -735,6 +825,14 @@ where
                 if !app.act(action_for(&key)) {
                     app.settle();
                     return Ok(());
+                }
+            }
+            Event::Mouse(mouse) => {
+                app.point(pointer_for(&mouse));
+                // a click on a row is also an opening of it, which is what a
+                // click on a list row means everywhere else
+                if let Pointer::Click { .. } = pointer_for(&mouse) {
+                    app.act(Action::Open);
                 }
             }
             // a resize changes the column set and the row count, and both are

@@ -100,8 +100,10 @@ pub struct Theme {
     pub danger: Color,
     /// something needs attention but nothing is lost.
     pub warning: Color,
-    /// something worked.
-    pub success: Color,
+    // there is deliberately no `success`. a green flash on every action that
+    // worked is a colour with no job: a tool whose every ordinary action is a
+    // success has nothing to announce, and a status hue that appears whenever
+    // nothing is wrong trains a reader to stop looking at it.
 }
 
 impl Theme {
@@ -129,7 +131,6 @@ impl Theme {
             border_focus: Color::Gray,
             danger: Color::Red,
             warning: Color::Yellow,
-            success: Color::Green,
         }
     }
 
@@ -185,7 +186,6 @@ impl Theme {
             border_focus: rgb(0x86, 0x90, 0x9b),
             danger: rgb(0xff, 0x96, 0x8a),
             warning: rgb(0xe1, 0xa9, 0x56),
-            success: rgb(0x82, 0xc2, 0x83),
         }
     }
 
@@ -213,7 +213,6 @@ impl Theme {
             border_focus: rgb(0x7e, 0x88, 0x93),
             danger: rgb(0xb2, 0x48, 0x40),
             warning: rgb(0x93, 0x5f, 0x00),
-            success: rgb(0x39, 0x77, 0x3d),
         }
     }
 }
