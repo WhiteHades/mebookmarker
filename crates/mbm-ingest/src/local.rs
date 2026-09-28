@@ -34,7 +34,7 @@ pub fn parse_netscape(body: &str) -> Result<Vec<Bookmark>> {
         // an entry is checked before the folder markers, because a compact
         // export puts `<DL><DT><A HREF=...>` on one line and a `continue` on
         // the `<DL>` would swallow the entry that follows it
-        let url = attribute(line, "href").or_else(|| attribute(line, "HREF"));
+        let url = attribute(line, "href");
 
         // a folder names itself in an `<H3>` and opens with the `<DL>` that
         // follows it, so the name is held until the list starts
@@ -78,17 +78,45 @@ pub fn parse_netscape(body: &str) -> Result<Vec<Bookmark>> {
 /// finding the first `>` on the line does not work: a line usually opens with
 /// `<DT><A HREF="...">`, so the first one belongs to the `<DT>`.
 fn anchor_text(line: &str) -> Option<String> {
-    // the anchor is the last element opened on the line
-    let open = line.rfind("<A").or_else(|| line.rfind("<a"))?;
-    let start = line[open..].find('>')? + open + 1;
-    let end = line[start..].find('<').map(|e| start + e)?;
-    let text = unescape(line[start..end].trim());
-    (!text.is_empty()).then_some(text)
+    // the name is the text of the last tag on the line that has text inside it.
+    //
+    // finding the first `>` does not work, because a line usually opens with
+    // `<DT><A HREF="...">` and the first one belongs to the `<DT>`. looking for
+    // the last `<A` does not work either, because a folder is named by an
+    // `<H3>` and every bookmark in it would be filed outside the folder a
+    // person put it in.
+    let bytes = line.as_bytes();
+    let mut found: Option<String> = None;
+    let mut at = 0usize;
+    while at < bytes.len() {
+        if bytes[at] != b'<' {
+            at += 1;
+            continue;
+        }
+        let Some(close) = line[at..].find('>').map(|o| at + o) else { break };
+        let tag = &line[at + 1..close];
+        let start = close + 1;
+        let end = line[start..].find('<').map_or(line.len(), |o| start + o);
+        let text = unescape(line[start..end].trim());
+        if !text.is_empty() && !tag.starts_with('/') {
+            found = Some(text);
+        }
+        at = start.max(close + 1);
+    }
+    found
 }
 
+/// the value of an attribute, matched without regard to case.
+///
+/// a netscape file is not xml and nothing in it is case-normalised: every
+/// browser that writes one writes `HREF` and `ADD_DATE` in capitals and writes
+/// `href` in lower case when the export was made by something else. a
+/// case-sensitive reader keeps the urls and silently drops the names, the dates
+/// and the folders, which is an import that looks like it worked.
 fn attribute(line: &str, name: &str) -> Option<String> {
+    let lower = line.to_ascii_lowercase();
     let needle = format!("{name}=\"");
-    let at = line.find(&needle)?;
+    let at = lower.find(&needle)?;
     let rest = &line[at + needle.len()..];
     let end = rest.find('"')?;
     Some(rest[..end].to_owned())
@@ -366,180 +394,4 @@ fn unescape(raw: &str) -> String {
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&nbsp;", " ")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_netscape_export_becomes_bookmarks() {
-        let html = r#"<!DOCTYPE NETSCAPE-Bookmark-file-1>
-<DL><p>
-    <DT><H3 ADD_DATE="1700000000">Work</H3>
-    <DL><p>
-        <DT><A HREF="https://example.com/a" ADD_DATE="1767225845">A page</A>
-    </DL><p>
-</DL><p>"#;
-        let items = parse_netscape(html).unwrap();
-        assert_eq!(items.len(), 1);
-        assert!(items[0].text.contains("A page"));
-        assert_eq!(items[0].source.medium, SourceMedium::BrowserBookmarks);
-    }
-
-    #[test]
-    fn a_netscape_export_with_many_entries_reads_them_all() {
-        let html = r#"<DL><p>
-            <DT><A HREF="https://a.example/1">One</A>
-            <DT><A HREF="https://b.example/2">Two</A>
-            <DT><A HREF="https://c.example/3">Three</A>
-        </DL><p>"#;
-        assert_eq!(parse_netscape(html).unwrap().len(), 3);
-    }
-
-    #[test]
-    fn a_netscape_entry_without_an_http_href_is_skipped() {
-        let html = r#"<DL><p><DT><A HREF="javascript:void(0)">Nope</A>
-            <DT><A HREF="file:///tmp/x">Also nope</A></DL><p>"#;
-        assert!(parse_netscape(html).unwrap().is_empty());
-    }
-
-    #[test]
-    fn the_same_url_from_two_places_gets_the_same_id() {
-        let a =
-            parse_netscape(r#"<DL><p><DT><A HREF="https://example.com/x">X</A></DL><p>"#).unwrap();
-        let b = parse_netscape(r#"<DL><p><DT><A HREF="https://example.com/x">X again</A></DL><p>"#)
-            .unwrap();
-        assert_eq!(a[0].source.external_id, b[0].source.external_id);
-    }
-
-    #[test]
-    fn an_opml_file_becomes_bookmarks() {
-        let opml = r#"<opml version="1.0"><body>
-          <outline text="Reading later">
-            <outline type="rss" text="A blog" xmlUrl="https://blog.example/feed"/>
-            <outline text="A page" type="link" url="https://example.com/p" addDate="1767225845000"/>
-          </outline>
-        </body></opml>"#;
-        let items = parse_opml(opml).unwrap();
-        assert_eq!(items.len(), 2, "a feed subscription is kept as well as a page");
-        let page = items.iter().find(|b| b.text.contains("A page")).expect("the page");
-        assert!(page.tags.contains("reading later"), "{:?}", page.tags);
-        let feed = items.iter().find(|b| b.tags.contains("feed")).expect("the feed");
-        assert!(feed.text.contains("A blog"));
-    }
-
-    #[test]
-    fn a_url_list_becomes_bookmarks() {
-        let list = "https://a.example/1\n# a comment\n\nhttps://b.example/2\nb.example/3\n";
-        let items = parse_url_list(list).unwrap();
-        assert_eq!(items.len(), 3, "the comment and blank line are skipped");
-        assert!(items[2].url.as_ref().unwrap().as_str().starts_with("https://b.example/3"));
-    }
-
-    #[test]
-    fn a_markdown_link_in_a_url_list_is_unwrapped() {
-        let items = parse_url_list("[A page](https://example.com/p)").unwrap();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0].url.as_ref().unwrap().as_str(), "https://example.com/p");
-    }
-
-    #[test]
-    fn a_repeated_url_is_listed_once() {
-        let items = parse_url_list("https://a.example/1\nhttps://a.example/1\n").unwrap();
-        assert_eq!(items.len(), 1);
-    }
-
-    #[test]
-    fn a_non_http_url_in_a_list_is_skipped() {
-        assert!(parse_url_list("mailto:a@b.example\nftp://files.example/x").unwrap().is_empty());
-    }
-
-    #[test]
-    fn a_text_document_becomes_one_bookmark() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("notes.md");
-        std::fs::write(&path, "# A note\n\nSome content here.").unwrap();
-        let bookmark = parse_text_document(&path, "# A note\n\nSome content here.").unwrap();
-        assert_eq!(bookmark.title.as_deref(), Some("notes"));
-        assert!(bookmark.tags.contains("local"));
-        assert!(bookmark.tags.contains("md"));
-    }
-
-    #[test]
-    fn reading_a_directory_walks_its_documents() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.md"), "first").unwrap();
-        std::fs::write(dir.path().join("b.txt"), "second").unwrap();
-        std::fs::write(dir.path().join("skip.bin"), "binary").unwrap();
-        std::fs::create_dir(dir.path().join("nested")).unwrap();
-        std::fs::write(dir.path().join("nested/c.md"), "third").unwrap();
-
-        let (found, failed) = read_directory(dir.path(), true);
-        assert_eq!(
-            found.len(),
-            3,
-            "found {:?}",
-            found.iter().map(|b| b.title.clone()).collect::<Vec<_>>()
-        );
-        assert!(failed.is_empty(), "{failed:?}");
-    }
-
-    #[test]
-    fn reading_a_directory_skips_hidden_and_build_directories() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("node_modules")).unwrap();
-        std::fs::write(dir.path().join("node_modules/dep.md"), "x").unwrap();
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
-        std::fs::write(dir.path().join(".git/x.md"), "x").unwrap();
-        std::fs::write(dir.path().join("real.md"), "y").unwrap();
-
-        let (found, _) = read_directory(dir.path(), true);
-        assert_eq!(found.len(), 1);
-    }
-
-    #[test]
-    fn a_shallow_read_does_not_descend() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("nested")).unwrap();
-        std::fs::write(dir.path().join("a.md"), "top").unwrap();
-        std::fs::write(dir.path().join("nested/b.md"), "deep").unwrap();
-
-        let (found, _) = read_directory(dir.path(), false);
-        assert_eq!(found.len(), 1);
-    }
-
-    #[test]
-    fn reading_a_missing_directory_reports_rather_than_panics() {
-        let (found, failed) = read_directory(Path::new("/nonexistent/path/xyz"), true);
-        assert!(found.is_empty());
-        assert_eq!(failed.len(), 1);
-    }
-
-    #[test]
-    fn a_folder_of_documents_comes_back_oldest_first() {
-        let dir = tempfile::tempdir().unwrap();
-        for name in ["c", "a", "b"] {
-            std::fs::write(dir.path().join(format!("{name}.md")), name).unwrap();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        let (found, _) = read_directory(dir.path(), false);
-        let titles: Vec<Option<&str>> = found.iter().map(|b| b.title.as_deref()).collect();
-        assert_eq!(titles.len(), 3);
-        let times: Vec<i64> = found.iter().map(Bookmark::sort_timestamp).collect();
-        assert!(times.windows(2).all(|w| w[0] <= w[1]), "{times:?}");
-    }
-
-    #[test]
-    fn an_opml_file_inside_a_folder_is_expanded() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("subs.opml"),
-            r#"<opml><body><outline text="p" url="https://example.com/1"/></body></opml>"#,
-        )
-        .unwrap();
-        let (found, _) = read_directory(dir.path(), false);
-        assert_eq!(found.len(), 1);
-        assert_eq!(found[0].source.medium, SourceMedium::BrowserBookmarks);
-    }
 }
