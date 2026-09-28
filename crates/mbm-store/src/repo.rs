@@ -326,6 +326,29 @@ impl<'conn> Repo<'conn> {
         Ok(())
     }
 
+    /// the items every enrichment stage has finished.
+    ///
+    /// an export of these is a finished document rather than a mixture of
+    /// finished and half-done, which is the difference between an archive and
+    /// a work in progress. the filter is in sql because the answer is a count
+    /// as often as it is a listing.
+    pub fn list_complete(&self, limit: usize, offset: usize) -> Result<Vec<Bookmark>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {ROW_COLUMNS} FROM bookmark b
+                 WHERE b.entities_at IS NOT NULL
+                   AND b.vision_at   IS NOT NULL
+                   AND b.tagged_at   IS NOT NULL
+                   AND b.categorized_at IS NOT NULL
+                   AND b.described_at  IS NOT NULL
+                 ORDER BY b.created_at DESC, b.id DESC LIMIT ?1 OFFSET ?2"
+            ))
+            .sql()?;
+        let rows = stmt.query_map(params![limit as i64, offset as i64], map_row).sql()?;
+        rows.map(|row| row.map_err(|e| store_err(&e))).collect()
+    }
+
     /// load a page of bookmarks for a list view.
     pub fn list(&self, limit: usize, offset: usize) -> Result<Vec<Bookmark>> {
         let mut stmt = self
