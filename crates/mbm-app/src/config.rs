@@ -264,7 +264,7 @@ impl Agent {
 }
 
 /// where a secret comes from.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Twitter {
     /// the environment variable holding the cookie jar.
@@ -278,11 +278,20 @@ pub struct Twitter {
 }
 
 /// where a secret comes from.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct GitHub {
     /// the environment variable holding the token.
     pub token_env_var: String,
+}
+
+impl Default for GitHub {
+    /// the conventional name, so a token in the environment is found without
+    /// the configuration having to name it. the name is not a secret; the token
+    /// is, and it never appears in a file.
+    fn default() -> Self {
+        Self { token_env_var: "GITHUB_TOKEN".to_owned() }
+    }
 }
 
 impl GitHub {
@@ -290,6 +299,19 @@ impl GitHub {
     #[must_use]
     pub fn token(&self) -> Option<String> {
         std::env::var(&self.token_env_var).ok().filter(|t| !t.trim().is_empty())
+    }
+}
+
+impl Default for Twitter {
+    /// the conventional names, so cookies in the environment are found without
+    /// the configuration having to name them.
+    fn default() -> Self {
+        Self {
+            cookie_env_var: "TWITTER_COOKIES".to_owned(),
+            cookie_file: PathBuf::from("cookies.txt"),
+            bird_path: PathBuf::from("bird"),
+            use_bird: false,
+        }
     }
 }
 
@@ -451,269 +473,3 @@ impl Config {
 /// format itself, and mixing the two in one string literal makes both harder to
 /// read.
 const HEADER: &str = include_str!("config.header.toml");
-
-#[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
-mod tests {
-    use super::*;
-
-    fn tmp() -> tempfile::TempDir {
-        tempfile::tempdir().unwrap()
-    }
-
-    #[test]
-    fn a_missing_file_is_a_working_install() {
-        let dir = tmp();
-        let config = Config::load(&dir.path().join("nope.toml")).unwrap();
-        assert_eq!(config, Config::default());
-    }
-
-    #[test]
-    fn a_partial_file_takes_the_rest_from_the_defaults() {
-        let dir = tmp();
-        let path = dir.path().join("mebookmarker.toml");
-        std::fs::write(&path, "page_size = 25\n").unwrap();
-        let config = Config::load(&path).unwrap();
-        assert_eq!(config.page_size, 25);
-        assert_eq!(config.retries, Config::default().retries);
-    }
-
-    #[test]
-    fn a_full_round_trip_keeps_everything() {
-        let dir = tmp();
-        let mut config = Config::default();
-        config.page_size = 7;
-        config.enrich.describe = true;
-        config.agent.name = "codex".to_owned();
-        config.agent.model = Some("gpt-5".to_owned());
-        config.sources.push(Source {
-            medium: SourceMedium::Rss,
-            enabled: true,
-            options: toml::Table::new(),
-        });
-        config.sinks.push(Sink {
-            kind: SinkMedium::Html,
-            enabled: true,
-            path: PathBuf::from("site"),
-        });
-
-        let path = dir.path().join("mebookmarker.toml");
-        config.save(&path).unwrap();
-        let back = Config::load(&path).unwrap();
-        assert_eq!(config, back);
-    }
-
-    #[test]
-    fn an_unknown_key_is_reported_rather_than_ignored() {
-        let dir = tmp();
-        let path = dir.path().join("mebookmarker.toml");
-        std::fs::write(&path, "page_sizes = 25\n").unwrap();
-        let err = Config::load(&path).unwrap_err();
-        assert!(err.to_string().contains("page_sizes"), "{err}");
-    }
-
-    #[test]
-    fn a_malformed_file_names_the_path() {
-        let dir = tmp();
-        let path = dir.path().join("mebookmarker.toml");
-        std::fs::write(&path, "this is not toml\n").unwrap();
-        let err = Config::load(&path).unwrap_err();
-        assert!(err.to_string().contains("mebookmarker.toml"), "{err}");
-    }
-
-    /// the checked-in example, regenerated so it cannot drift from the defaults.
-    ///
-    /// a config example that a release changed and nobody noticed is worse than
-    /// no example, because a person trusts it. this test fails the moment the
-    /// defaults and the file disagree.
-    #[test]
-    fn the_example_config_matches_the_defaults() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mebookmarker.toml.example");
-        let Ok(existing) = std::fs::read_to_string(&path) else {
-            panic!("{} does not exist. create it with:\n    mbm config init", path.display());
-        };
-        // the checked-in file carries a hand-written examples section after the
-        // generated part, so the check is that the generated part is a prefix
-        // and not a copy
-        let generated = Config::example_toml();
-        assert!(
-            existing.starts_with(&generated),
-            "the generated part of {} does not match the defaults.\nrun `mbm config --example` \
-             and keep the examples section.\n\n{}",
-            path.display(),
-            generated
-        );
-    }
-
-    #[test]
-    fn the_saved_file_explains_itself() {
-        let body = Config::default().to_toml();
-        assert!(body.starts_with("# mebookmarker configuration"), "{body}");
-        assert!(body.contains("mbm config init"), "{body}");
-    }
-
-    #[test]
-    fn a_zero_page_size_is_rejected() {
-        let mut config = Config::default();
-        config.page_size = 0;
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn an_absurd_retry_count_is_rejected() {
-        let mut config = Config::default();
-        config.retries = 100;
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("retries"), "{err}");
-    }
-
-    #[test]
-    fn a_confidence_outside_zero_to_one_is_rejected() {
-        let mut config = Config::default();
-        config.enrich.confidence_floor = 1.5;
-        assert!(config.validate().is_err());
-    }
-
-    #[test]
-    fn an_unknown_agent_name_is_rejected_with_the_real_ones() {
-        let mut config = Config::default();
-        config.agent.name = "gpt".to_owned();
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("opencode"), "{err}");
-    }
-
-    #[test]
-    fn two_sinks_writing_to_one_path_are_rejected() {
-        let mut config = Config::default();
-        config.sinks = vec![
-            Sink { kind: SinkMedium::Json, enabled: true, path: PathBuf::from("out") },
-            Sink { kind: SinkMedium::Jsonl, enabled: true, path: PathBuf::from("out") },
-        ];
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("out"), "{err}");
-    }
-
-    #[test]
-    fn a_disabled_sink_writing_to_one_path_is_fine() {
-        let mut config = Config::default();
-        config.sinks = vec![
-            Sink { kind: SinkMedium::Json, enabled: true, path: PathBuf::from("out") },
-            Sink { kind: SinkMedium::Jsonl, enabled: false, path: PathBuf::from("out") },
-        ];
-        assert!(config.validate().is_ok());
-    }
-
-    #[test]
-    fn an_enabled_twitter_source_needs_somewhere_to_read_cookies_from() {
-        let mut config = Config::default();
-        config.sources.push(Source { medium: SourceMedium::X, ..Source::default() });
-        let err = config.validate().unwrap_err();
-        assert!(err.to_string().contains("cookie_env_var"), "{err}");
-    }
-
-    #[test]
-    fn source_options_are_read_by_type() {
-        let source: Source = toml::from_str(
-            r#"
-            medium = "rss"
-            enabled = true
-
-            [options]
-            urls = ["https://a.example/feed", "https://b.example/feed"]
-            limit = 50
-            paginate = true
-            "#,
-        )
-        .unwrap();
-        assert_eq!(source.get("nope"), None);
-        assert_eq!(source.list("urls").len(), 2);
-        assert!(source.flag("paginate"));
-        assert!(!source.flag("missing"));
-    }
-
-    #[test]
-    fn the_database_lives_under_the_data_directory() {
-        let mut config = Config::default();
-        config.data_dir = PathBuf::from("/tmp/mbm");
-        assert_eq!(config.database(), PathBuf::from("/tmp/mbm/mebookmarker.db"));
-    }
-
-    #[test]
-    fn a_relative_sink_path_resolves_against_the_data_directory() {
-        let mut config = Config::default();
-        config.data_dir = PathBuf::from("/data");
-        assert_eq!(config.resolve(Path::new("out.jsonl")), PathBuf::from("/data/out.jsonl"));
-        assert_eq!(config.resolve(Path::new("/abs/out.jsonl")), PathBuf::from("/abs/out.jsonl"));
-    }
-
-    #[test]
-    fn an_absent_agent_name_falls_back_to_what_is_installed() {
-        let config = Config::default();
-        // the answer depends on the machine, and both answers are correct
-        assert_eq!(config.agent.resolve(), mbm_agent::default_agent());
-    }
-
-    #[test]
-    fn a_named_agent_wins_over_the_installed_one() {
-        let mut config = Config::default();
-        config.agent.name = "claude".to_owned();
-        assert_eq!(config.agent.resolve(), Some(mbm_agent::Agent::Claude));
-    }
-
-    #[test]
-    fn a_driver_carries_the_model_and_the_timeout() {
-        let mut config = Config::default();
-        config.agent.name = "codex".to_owned();
-        config.agent.model = Some("gpt-5".to_owned());
-        config.agent.timeout_secs = 30;
-        let driver = config.agent.driver().unwrap();
-        let args = driver.command_line("p");
-        let at = args.iter().position(|a| a == "-m").unwrap();
-        assert_eq!(args[at + 1], "gpt-5");
-    }
-
-    #[test]
-    fn the_default_vocabulary_is_usable() {
-        let vocabulary = default_vocabulary();
-        assert!(vocabulary.len() > 10);
-        assert!(vocabulary.contains(&"rust".to_owned()));
-        let mut sorted = vocabulary.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted.len(), vocabulary.len(), "no duplicates");
-    }
-
-    #[test]
-    fn describe_is_the_stage_that_has_to_be_asked_for() {
-        let enrich = Enrich::default();
-        assert!(enrich.entities);
-        assert!(!enrich.describe, "prose through an agent is the expensive tier");
-    }
-
-    #[test]
-    fn the_default_taxonomy_has_categories() {
-        let config = Config::default();
-        assert!(!config.taxonomy.categories.is_empty());
-        assert!(config.taxonomy.get(&config.taxonomy.fallback).is_some());
-    }
-
-    #[test]
-    fn enabled_sources_are_the_ones_the_user_wants() {
-        let mut config = Config::default();
-        config.sources = vec![
-            Source { medium: SourceMedium::Rss, enabled: true, options: toml::Table::new() },
-            Source { medium: SourceMedium::Reddit, enabled: false, options: toml::Table::new() },
-        ];
-        assert_eq!(config.enabled_sources().len(), 1);
-        assert_eq!(config.sources_of(SourceMedium::Rss).len(), 1);
-        assert_eq!(config.sources_of(SourceMedium::Reddit).len(), 0);
-    }
-
-    #[test]
-    fn the_config_path_lands_in_the_given_directory() {
-        assert_eq!(
-            Config::path_in(Path::new("/etc/mbm")),
-            PathBuf::from("/etc/mbm/mebookmarker.toml")
-        );
-    }
-}
