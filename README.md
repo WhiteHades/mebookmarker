@@ -5,7 +5,7 @@ Archive your bookmarks from every medium, search them, and keep them.
 One binary, one SQLite file, one TOML config. It reads from X, Reddit, Hacker
 News, GitHub, RSS/Atom, YouTube, your browser's export, OPML, JSON, a list of
 URLs, and a folder of notes. It writes to Markdown, Obsidian, HTML, CSV, JSONL,
-JSON, OPML, and a raw archive. It runs in a terminal and it runs from cron.
+JSON, OPML, and a raw archive. It runs in a terminal and it runs from a script.
 
 ```
 mbm add https://example.com/article          # save a url
@@ -220,8 +220,88 @@ mbm tui
 ```
 
 Four views over one list: browse, search, detail, and tags. Everything is on the
-keyboard, `f2` tags the selected item, `u` puts back whatever you just deleted,
-and the status line always says what the last action did.
+keyboard, and the status line always says what the last action did.
+
+```
+ search Boonful                                                  hybrid
+▎  2026-09-27    hacker-news      Show HN: Boonful — publish…   @atifhub
+   2026-09-26    reddit          Ask HN: how do you keep a sma…  @havu12
+   2026-09-25    markdown-file   AI alignment and interpretabi…  @trq212
+ 1 of 3 bookmarks    removed 13941… . ctrl-u puts it back.   ↑↓ move · ⏎ open …
+```
+
+| key | what it does |
+|-----|--------------|
+| `↑` `↓` `pgup` `pgdn` `home` `end` | move |
+| `⏎` | open the item, or filter by the tag you are on |
+| `esc` | go back to the list |
+| `tab` | change the ranking: hybrid, exact, fuzzy |
+| `f2` | tag the selected item |
+| `ctrl-d` | remove it, with `ctrl-u` to put it back |
+| `ctrl-u` | put back the last thing removed |
+| `ctrl-g` | the tag list |
+| `ctrl-k` | clear the query |
+| `ctrl-r` | reload |
+| `ctrl-c` | leave |
+
+### How it looks
+
+The interface reads the terminal it is in. `COLORFGBG` says whether the
+background is light or dark and the palette is chosen to match, because a palette
+tuned for one is unreadable on the other: the dark palette's secondary text is
+9:1 on near-black and 1.9:1 on white. `MBM_THEME=light|dark|auto` overrides it,
+`NO_COLOR` stops the interface asking for colour at all, and both are honoured
+without the program reading a single byte of the terminal's input.
+
+Every colour in it is a solved value rather than a chosen one, and the solver and
+the measurement are both in the repository:
+
+```sh
+cargo run -p mbm-app --example contrast-check   # 38 pairs, both appearances
+cargo run -p mbm-app --example solve-theme      # the walk that produced them
+```
+
+Each pair is measured two ways and has to clear both: the WCAG 2 ratio, which is
+what a conformance claim rests on, and the APCA lightness contrast, which is the
+number a palette is actually designed against. APCA is the stricter of the two
+here by a wide margin, and the first hand-picked secondary text cleared 4.5:1
+comfortably while only reaching Lc 40.
+
+The list's columns give way as the terminal narrows, in the order of how much
+each one says: the source goes first, then the date, and the title never goes,
+because it is the only column that says what the row is. The frame itself is
+checked at five widths by the end-to-end suite.
+
+### How it moves
+
+A terminal redraws a whole frame, so motion here is not free: every frame is a
+full repaint. What is animated is therefore the rare thing, not the frequent one.
+
+- a keystroke, a row moving, a frame appearing: instant. there is no transition
+  on a high-frequency interaction, because a person typing is not waiting for a
+  picture and paying for it in repaints is how a list feels laggy.
+- opening an item, a status message landing, an empty state arriving: a 300ms
+  entrance, a 150ms exit, a 100ms stagger between the semantic chunks of a view,
+  on `cubic-bezier(0.2, 0, 0, 1)`.
+- nothing animates on the first frame. the first thing drawn is the finished
+  thing, and motion only ever answers something you did.
+- every animated change leaves a static cue behind it. a row that slides in is
+  also bold and carries a bar; a status that brightens and settles is also text
+  that stays.
+- `MBM_NO_MOTION=1` turns all of it off.
+
+### Checking it
+
+The interface is a program that draws, so the only honest way to check what it
+drew is to let it draw.
+
+```sh
+# drive it in a pty and read the frame back
+cargo test -p mbm-app --test e2e the_terminal
+
+# render one frame, as text and as html carrying the real cell colours
+cargo run -p mbm-app --example frame -- ~/.local/share/mebookmarker/data 100x30 /tmp/frame dark browse
+```
 
 ## Command line
 
@@ -241,9 +321,9 @@ mbm config             read and write the configuration
 mbm tui                the interactive browser
 ```
 
-Exit codes are worth knowing about in a cron job: `0` success, `1` a failure
-worth reading, `2` a credential or configuration problem that retrying will not
-fix, `3` a rate limit or a transient failure that will.
+Exit codes are worth knowing about in a script: `0` success, `1` a failure worth
+reading, `2` a credential or configuration problem that retrying will not fix,
+`3` a rate limit or a transient failure that will.
 
 ## Where things live
 
