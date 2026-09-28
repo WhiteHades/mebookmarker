@@ -66,8 +66,10 @@ async fn dispatch(cli: &Cli) -> Result<Output> {
     let config = cli.config()?;
 
     // the commands that touch nothing else never need the store
+    // the config subcommand has to resolve the path the same way every other
+    // command does, or `--config` silently does nothing for it
     if let Command::Config(args) = &cli.command {
-        return cli::config_command(args);
+        return cli::config_command(args, &cli::config_path(cli));
     }
 
     let conn = mbm_app::pipeline::open(&config)?;
